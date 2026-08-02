@@ -101,10 +101,8 @@ def update_feature_weights(
 
     safe = np.where(dispersions <= 0, np.finfo(float).eps, dispersions)
     exponent = 1.0 / (beta - 1.0)
-    weights = np.zeros_like(safe)
-    for j, value in enumerate(safe):
-        ratios = value / safe
-        weights[j] = 1.0 / np.sum(ratios**exponent)
+    inverse = safe ** (-exponent)
+    weights = inverse / inverse.sum()
     return np.nan_to_num(weights, nan=1.0 / X.shape[1], posinf=1.0, neginf=0.0)
 
 

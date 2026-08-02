@@ -58,6 +58,7 @@ def run_plgb_fsc(
     n_clusters: int,
     config: PLGBFSCConfig,
     seed: int | None = None,
+    precomputed_pseudo_labels: np.ndarray | None = None,
 ) -> PLGBFSCResult:
     """执行完整 PLGB-FSC 流程。"""
 
@@ -67,15 +68,21 @@ def run_plgb_fsc(
 
     # This scaling is inside pure_ball_hu.m and is used only by weighted
     # K-Means.  Global feature selection and Transfer Cut retain raw values.
-    scaled = minmax_scale_like_matlab(X)
-    pseudo_labels, _, _ = weighted_kmeans(
-        scaled,
-        n_clusters,
-        beta=config.weighted_kmeans_beta,
-        initial_weights=np.ones(X.shape[1], dtype=float),
-        max_iter=config.weighted_kmeans_max_iter,
-        seed=seed,
-    )
+    if precomputed_pseudo_labels is None:
+        scaled = minmax_scale_like_matlab(X)
+        pseudo_labels, _, _ = weighted_kmeans(
+            scaled,
+            n_clusters,
+            beta=config.weighted_kmeans_beta,
+            initial_weights=np.ones(X.shape[1], dtype=float),
+            max_iter=config.weighted_kmeans_max_iter,
+            seed=seed,
+        )
+    else:
+        pseudo_labels = np.asarray(precomputed_pseudo_labels, dtype=int).reshape(-1)
+        if pseudo_labels.size != X.shape[0]:
+            raise ValueError("precomputed_pseudo_labels length must match X")
+        pseudo_labels = pseudo_labels.copy()
 
     # 2) 用伪标签给每个原始特征打互信息分数，保留前 p1 个特征。
     X_selected, feature_indices, mi_scores = select_global_features_by_pseudo_label(X, pseudo_labels, p1)
@@ -149,12 +156,14 @@ class PLGBFSC(BenchmarkAlgorithm):
         config: PLGBFSCConfig,
         n_clusters: int,
         random_state: int = 1,
+        precomputed_pseudo_labels: np.ndarray | None = None,
     ) -> None:
         if isinstance(random_state, bool) or not isinstance(random_state, int):
             raise TypeError("random_state must be an integer")
         self.config = config
         self.n_clusters = n_clusters
         self.random_state = random_state
+        self._precomputed_pseudo_labels = precomputed_pseudo_labels
 
     def fit(self, X: np.ndarray) -> "PLGBFSC":
         result = run_plgb_fsc(
@@ -162,6 +171,7 @@ class PLGBFSC(BenchmarkAlgorithm):
             self.n_clusters,
             self.config,
             seed=self.random_state,
+            precomputed_pseudo_labels=self._precomputed_pseudo_labels,
         )
         self.labels_ = np.asarray(result.labels, dtype=int).reshape(-1)
         self.result_ = result
