@@ -11,7 +11,7 @@ Only edit this file when configuring an experiment.
 | `"max"`           | `max(H真值, H预测)` | 分数通常较保守 |
 
 run_id + resume:
-    1. 某个 seed 失败后，失败记录仍写入 all_runs.csv。下次续跑时，该 (seed, p2, theta) 被视为已记录，所以不会重新运行。
+    1. 某个 seed 失败后，失败记录仍写入 all_runs.csv。MY-V0 使用 (seed, p1, p2, pdmf_neighbors, theta) 作为断点键。
     2. 对于部分 seed 成功的参数组合，程序仍会用成功 seed 计算均值和标准差，并写入 grid_summary.csv。
 
 """
@@ -26,27 +26,50 @@ STANDARDIZED_DATA_ROOT = DATA_ROOT / "standardized"
 
 # 每个算法独立维护实验参数；即使当前取值相同，也不要相互复用。
 PLGB_FSC_PARAMS = {
-    "p1_ratio": 0.75,
-    "p2_values": tuple(range(4, 56, 4)),        # (50, 201, 10)
-    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),# (70, 100, 5):(0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
+    # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
+    "p1_counts": (),
+    "p1_ratios": (0.75,),                                   # 默认比例0.75
+
+    "p2_values": tuple(range(4, 56, 4)),          # 默认属性区间(50, 201, 10)
+    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
+                                                            # 默认阈值(70, 100, 5):(0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
 }
 
 MY_V0_PARAMS = {
-    "p1_ratio": 0.75,
-    "p2_values": tuple(range(4, 56, 4)),
+    # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
+    "p1_counts": (),
+    "p1_ratios": (0.75,),
+    # 组件3：粒球局部保留属性数。counts 范围 [1, p1-1]；ratios 按 ceil(p1 * ratio) 换算，范围 (0, 1)。
+    "p2_counts": tuple(range(4, 56, 4)),
+    "p2_ratios": (),
+    # 组件3：伪纯度停止阈值，满足 pseudo_purity >= theta 且 ball_size < 8 时停止划分，范围 (0, 1]。
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
-    "pdmf_neighbors": 5,
+    # PDMF 左右邻域d。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
+    "pdmf_neighbors_counts": (5,),
+    "pdmf_neighbors_ratios": (),
+    # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
 }
 
 MY_V1_PARAMS = {
-    "p1_ratio": 0.75,
-    "p2_values": tuple(range(50, 201, 10)),
+    # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
+    "p1_counts": (),
+    "p1_ratios": (0.75,),
+    # 组件3：粒球局部保留属性数。counts 范围 [1, p1-1]；ratios 按 ceil(p1 * ratio) 换算，范围 (0, 1)。
+    "p2_counts": tuple(range(4, 56, 4)),
+    "p2_ratios": (),
+    # 组件3：伪纯度停止阈值，满足 pseudo_purity >= theta 且 ball_size < 8 时停止划分，范围 (0, 1]。
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
-    "pdmf_neighbors": 5,
+    # Gaussian-PDMF 左右局部邻域数。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
+    "pdmf_neighbors_counts": (5,),
+    "pdmf_neighbors_ratios": (),
+    # 稀疏 KNN 图每个样本的邻居数。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
+    "graph_neighbors_counts": (5,),
+    "graph_neighbors_ratios": (),
+    # 边相似度中原始属性相似度的权重 lambda；1-lambda 为 PDMF 形状与展宽相似度权重，范围 (0, 1)。
+    "pdmf_similarity_lambda_ratios": (0.5,),
+    # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
-    "graph_neighbors": 5,
-    "pdmf_similarity_lambda": 0.5,
 }
 
 @dataclass(frozen=True)

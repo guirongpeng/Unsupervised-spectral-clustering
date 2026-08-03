@@ -11,6 +11,7 @@ framework without using class labels or pseudo labels.
 """
 
 from functools import lru_cache
+import math
 
 import numpy as np
 from numpy.polynomial.legendre import leggauss
@@ -22,6 +23,27 @@ from .common.preprocessing import minmax_scale_like_matlab
 _H0 = 0.3702632681
 _SHAPE_GRID_SIZE = 513
 _QUADRATURE_ORDER = 96
+
+
+def resolve_pdmf_neighbor_count(
+    neighbors: int | float,
+    n_samples: int,
+) -> int:
+    """Resolve a fixed count or a sample-relative ratio to a neighbor count."""
+
+    if isinstance(neighbors, bool):
+        raise TypeError("neighbors must be an integer count or float ratio")
+    if isinstance(neighbors, int):
+        if neighbors < 1:
+            raise ValueError("neighbor count must be at least 1")
+        count = neighbors
+    elif isinstance(neighbors, float):
+        if not math.isfinite(neighbors) or not 0.0 < neighbors <= 1.0:
+            raise ValueError("neighbor ratio must be in (0, 1]")
+        count = math.ceil((n_samples - 1) * neighbors)
+    else:
+        raise TypeError("neighbors must be an integer count or float ratio")
+    return max(1, min(count, n_samples - 1))
 
 
 @lru_cache(maxsize=1)
@@ -102,7 +124,7 @@ def _asymmetric_local_spreads(
 
 def gaussian_pdmf_sample_entropies(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Construct the sample-level Gaussian-PDMF entropy matrix.
@@ -118,13 +140,12 @@ def gaussian_pdmf_sample_entropies(
         raise ValueError("X must contain at least two samples and one attribute")
     if not np.all(np.isfinite(values)):
         raise ValueError("X contains NaN or infinite values")
-    if isinstance(neighbors, bool) or not isinstance(neighbors, int) or neighbors < 1:
-        raise ValueError("neighbors must be a positive integer")
+    neighbor_count = resolve_pdmf_neighbor_count(neighbors, values.shape[0])
     if not np.isfinite(epsilon) or epsilon <= 0:
         raise ValueError("epsilon must be a finite positive number")
 
     nonconstant = np.ptp(values, axis=0) > 0.0
-    raw_left, raw_right = _asymmetric_local_spreads(values, neighbors, epsilon)
+    raw_left, raw_right = _asymmetric_local_spreads(values, neighbor_count, epsilon)
     spread_scale = np.maximum(np.maximum(raw_left, raw_right).max(axis=0), epsilon)
     spread_left = np.exp(raw_left / spread_scale[None, :])
     spread_right = np.exp(raw_right / spread_scale[None, :])
@@ -160,7 +181,7 @@ def _entropy_of_log_weights(log_weights: np.ndarray, axis: int = 0) -> np.ndarra
 
 def gaussian_pdmf_attribute_scores(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Return MY-V0 inner-significance scores for all attributes.
@@ -197,7 +218,7 @@ def gaussian_pdmf_attribute_scores(
 def select_features_by_gaussian_pdmf(
     X: np.ndarray,
     n_features: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
     *,
     scale_selected: bool = False,
@@ -227,7 +248,7 @@ def select_features_by_gaussian_pdmf(
 def select_global_features_by_gaussian_pdmf(
     X: np.ndarray,
     p1: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Select the global ``p1`` attributes without labels or pseudo labels."""
@@ -240,7 +261,7 @@ def select_global_features_by_gaussian_pdmf(
 def select_local_features_by_gaussian_pdmf(
     X: np.ndarray,
     p2: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Select and Min-Max scale local attributes before granular-ball 2-Means."""

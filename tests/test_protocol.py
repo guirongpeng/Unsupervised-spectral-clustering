@@ -1,23 +1,77 @@
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from algorithms.my_v0 import MYV0
+from algorithms.my_v0.feature_selection import resolve_pdmf_neighbor_count
 from algorithms.my_v1 import MYV1
+from algorithms.my_v1.feature_selection import (
+    resolve_graph_neighbor_count,
+    resolve_pdmf_neighbor_count as resolve_my_v1_pdmf_neighbor_count,
+)
 from algorithms.plgb_fsc import PLGBFSC
-from config import DATASETS, PLGB_FSC_PARAMS, ExperimentConfig
+from config import (
+    DATASETS,
+    MY_V0_PARAMS,
+    MY_V1_PARAMS,
+    PLGB_FSC_PARAMS,
+    ExperimentConfig,
+)
 from core.data import load_dataset
 from core.metrics import evaluate_clustering
-from run import _create_model
+from run import (
+    _create_model,
+    _resolve_p1_values,
+    _resolve_p2_values,
+    _resolve_pdmf_neighbor_settings,
+    _resolve_graph_neighbor_settings,
+    _resolve_similarity_lambda_settings,
+)
 
 
 def test_sucancer_protocol_can_be_configured_with_three_seeds() -> None:
     config = ExperimentConfig(datasets=("SuCancer",), seeds=(1, 2, 3))
     assert config.seeds == (1, 2, 3)
-    assert math.ceil(7909 * PLGB_FSC_PARAMS["p1_ratio"]) == 5932
+    assert _resolve_p1_values("plgb_fsc", 7909) == (5932,)
     assert all(p2 < 5932 for p2 in PLGB_FSC_PARAMS["p2_values"])
+
+
+def test_plgb_p1_supports_counts_and_ratios(monkeypatch) -> None:
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "p1_counts", (150,))
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "p1_ratios", (0.1, 0.2))
+    assert _resolve_p1_values("plgb_fsc", 1000) == (100, 150, 200)
+
+
+def test_my_v0_grid_supports_counts_and_ratios(monkeypatch) -> None:
+    monkeypatch.setitem(MY_V0_PARAMS, "p1_counts", (6,))
+    monkeypatch.setitem(MY_V0_PARAMS, "p1_ratios", (0.5,))
+    monkeypatch.setitem(MY_V0_PARAMS, "p2_counts", (2,))
+    monkeypatch.setitem(MY_V0_PARAMS, "p2_ratios", (0.5,))
+    monkeypatch.setitem(MY_V0_PARAMS, "pdmf_neighbors_counts", (3,))
+    monkeypatch.setitem(MY_V0_PARAMS, "pdmf_neighbors_ratios", (0.25,))
+    assert _resolve_p1_values("my_v0", 20) == (6, 10)
+    assert _resolve_p2_values("my_v0", 10) == (2, 5)
+    assert _resolve_pdmf_neighbor_settings("my_v0") == (3, 0.25)
+    assert resolve_pdmf_neighbor_count(0.25, 21) == 5
+
+
+def test_my_v1_grid_supports_counts_and_ratios(monkeypatch) -> None:
+    monkeypatch.setitem(MY_V1_PARAMS, "p1_counts", (6,))
+    monkeypatch.setitem(MY_V1_PARAMS, "p1_ratios", (0.5,))
+    monkeypatch.setitem(MY_V1_PARAMS, "p2_counts", (2,))
+    monkeypatch.setitem(MY_V1_PARAMS, "p2_ratios", (0.5,))
+    monkeypatch.setitem(MY_V1_PARAMS, "pdmf_neighbors_counts", (3,))
+    monkeypatch.setitem(MY_V1_PARAMS, "pdmf_neighbors_ratios", (0.25,))
+    monkeypatch.setitem(MY_V1_PARAMS, "graph_neighbors_counts", (4,))
+    monkeypatch.setitem(MY_V1_PARAMS, "graph_neighbors_ratios", (0.2,))
+    monkeypatch.setitem(MY_V1_PARAMS, "pdmf_similarity_lambda_ratios", (0.3, 0.7))
+    assert _resolve_p1_values("my_v1", 20) == (6, 10)
+    assert _resolve_p2_values("my_v1", 10) == (2, 5)
+    assert _resolve_pdmf_neighbor_settings("my_v1") == (3, 0.25)
+    assert _resolve_graph_neighbor_settings("my_v1") == (4, 0.2)
+    assert _resolve_similarity_lambda_settings("my_v1") == (0.3, 0.7)
+    assert resolve_my_v1_pdmf_neighbor_count(0.25, 21) == 5
+    assert resolve_graph_neighbor_count(0.2, 21) == 4
 
 
 def test_run_can_create_both_algorithms() -> None:

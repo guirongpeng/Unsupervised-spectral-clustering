@@ -20,9 +20,9 @@ class MYV1Config:
     p1: int
     p2: int
     purity: float = 0.95
-    pdmf_neighbors: int = 5
+    pdmf_neighbors: int | float = 5
     pdmf_epsilon: float = 1e-8
-    graph_neighbors: int = 5
+    graph_neighbors: int | float = 5
     pdmf_similarity_lambda: float = 0.5
     anchor_neighbors: int = 5
     weighted_kmeans_beta: float = 3.0
@@ -43,12 +43,10 @@ class MYV1Config:
             raise ValueError("p2 must satisfy 1 <= p2 < p1")
         if not math.isfinite(self.purity) or not 0 < self.purity <= 1:
             raise ValueError("purity must be a finite number in (0, 1]")
-        if self.pdmf_neighbors < 1:
-            raise ValueError("pdmf_neighbors must be at least 1")
+        self._validate_neighbor_setting("pdmf_neighbors", self.pdmf_neighbors)
         if not math.isfinite(self.pdmf_epsilon) or self.pdmf_epsilon <= 0:
             raise ValueError("pdmf_epsilon must be a finite positive number")
-        if self.graph_neighbors < 1:
-            raise ValueError("graph_neighbors must be at least 1")
+        self._validate_neighbor_setting("graph_neighbors", self.graph_neighbors)
         if (
             not math.isfinite(self.pdmf_similarity_lambda)
             or not 0 < self.pdmf_similarity_lambda < 1
@@ -75,3 +73,13 @@ class MYV1Config:
             raise ValueError("tcut_kmeans_n_init must be at least 1")
         if not isinstance(self.keep_matlab_split_rule, bool):
             raise TypeError("keep_matlab_split_rule must be a bool")
+
+    @staticmethod
+    def _validate_neighbor_setting(name: str, value: int | float) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be an integer count or float ratio")
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError(f"{name} count must be at least 1")
+        elif not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError(f"{name} ratio must be a finite number in (0, 1]")

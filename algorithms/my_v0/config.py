@@ -18,7 +18,7 @@ class MYV0Config:
     p1: int
     p2: int
     purity: float = 0.95
-    pdmf_neighbors: int = 5
+    pdmf_neighbors: int | float = 5
     pdmf_epsilon: float = 1e-8
     anchor_neighbors: int = 5
     weighted_kmeans_beta: float = 3.0
@@ -39,8 +39,19 @@ class MYV0Config:
             raise ValueError("p2 must satisfy 1 <= p2 < p1")
         if not math.isfinite(self.purity) or not 0 < self.purity <= 1:
             raise ValueError("purity must be a finite number in (0, 1]")
-        if self.pdmf_neighbors < 1:
-            raise ValueError("pdmf_neighbors must be at least 1")
+        if isinstance(self.pdmf_neighbors, bool):
+            raise TypeError("pdmf_neighbors must be an integer count or float ratio")
+        if isinstance(self.pdmf_neighbors, int):
+            if self.pdmf_neighbors < 1:
+                raise ValueError("pdmf_neighbors count must be at least 1")
+        elif isinstance(self.pdmf_neighbors, float):
+            if (
+                not math.isfinite(self.pdmf_neighbors)
+                or not 0.0 < self.pdmf_neighbors <= 1.0
+            ):
+                raise ValueError("pdmf_neighbors ratio must be in (0, 1]")
+        else:
+            raise TypeError("pdmf_neighbors must be an integer count or float ratio")
         if not math.isfinite(self.pdmf_epsilon) or self.pdmf_epsilon <= 0:
             raise ValueError("pdmf_epsilon must be a finite positive number")
         if self.anchor_neighbors < 1:

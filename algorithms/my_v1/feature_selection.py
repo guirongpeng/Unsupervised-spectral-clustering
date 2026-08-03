@@ -9,6 +9,7 @@ attributes combine normalized ranks of entropy inner significance and sparse
 Gaussian-PDMF graph importance.  Neither stage uses class or pseudo labels.
 """
 
+import math
 from functools import lru_cache
 
 import numpy as np
@@ -23,6 +24,40 @@ _H0 = 0.3702632681
 _SHAPE_GRID_SIZE = 513
 _SIMILARITY_SHAPE_GRID_SIZE = 1025
 _QUADRATURE_ORDER = 96
+
+
+def _resolve_neighbor_count(
+    value: int | float,
+    n_samples: int,
+    name: str,
+) -> int:
+    """Resolve a fixed count or a sample-size ratio to an effective K."""
+
+    if n_samples < 2:
+        raise ValueError("n_samples must be at least 2")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be an integer count or float ratio")
+    if isinstance(value, int):
+        if value < 1:
+            raise ValueError(f"{name} count must be at least 1")
+        count = value
+    else:
+        if not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError(f"{name} ratio must be a finite number in (0, 1]")
+        count = math.ceil((n_samples - 1) * value)
+    return min(max(1, count), n_samples - 1)
+
+
+def resolve_pdmf_neighbor_count(value: int | float, n_samples: int) -> int:
+    """Resolve the Gaussian-PDMF neighborhood for the current sample set."""
+
+    return _resolve_neighbor_count(value, n_samples, "pdmf_neighbors")
+
+
+def resolve_graph_neighbor_count(value: int | float, n_samples: int) -> int:
+    """Resolve the sparse-graph KNN neighborhood for the current sample set."""
+
+    return _resolve_neighbor_count(value, n_samples, "graph_neighbors")
 
 
 @lru_cache(maxsize=2)
@@ -115,7 +150,7 @@ def _asymmetric_local_spreads(
 
 def _gaussian_pdmf_components(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return entropy, active mask, spreads and clarity for Gaussian-PDMFs."""
@@ -125,13 +160,14 @@ def _gaussian_pdmf_components(
         raise ValueError("X must contain at least two samples and one attribute")
     if not np.all(np.isfinite(values)):
         raise ValueError("X contains NaN or infinite values")
-    if isinstance(neighbors, bool) or not isinstance(neighbors, int) or neighbors < 1:
-        raise ValueError("neighbors must be a positive integer")
+    neighbor_count = resolve_pdmf_neighbor_count(neighbors, values.shape[0])
     if not np.isfinite(epsilon) or epsilon <= 0:
         raise ValueError("epsilon must be a finite positive number")
 
     nonconstant = np.ptp(values, axis=0) > 0.0
-    raw_left, raw_right = _asymmetric_local_spreads(values, neighbors, epsilon)
+    raw_left, raw_right = _asymmetric_local_spreads(
+        values, neighbor_count, epsilon
+    )
     spread_scale = np.maximum(np.maximum(raw_left, raw_right).max(axis=0), epsilon)
     spread_left = np.exp(raw_left / spread_scale[None, :])
     spread_right = np.exp(raw_right / spread_scale[None, :])
@@ -155,7 +191,7 @@ def _gaussian_pdmf_components(
 
 def gaussian_pdmf_sample_entropies(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Construct the sample-level Gaussian-PDMF entropy matrix.
@@ -212,7 +248,7 @@ def _attribute_scores_from_sample_entropies(
 
 def gaussian_pdmf_attribute_scores(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Return Gaussian-PDMF inner-significance scores for all attributes.
@@ -228,14 +264,14 @@ def gaussian_pdmf_attribute_scores(
     return _attribute_scores_from_sample_entropies(sample_entropies, nonconstant)
 
 
-def _union_knn_edges(X: np.ndarray, neighbors: int) -> np.ndarray:
+def _union_knn_edges(X: np.ndarray, neighbors: int | float) -> np.ndarray:
     """Return unique undirected edges from the union of directed KNN lists."""
 
     values = np.asarray(X, dtype=float)
     n_samples = values.shape[0]
     if n_samples < 2:
         return np.empty((0, 2), dtype=int)
-    local_neighbors = min(int(neighbors), n_samples - 1)
+    local_neighbors = resolve_graph_neighbor_count(neighbors, n_samples)
     model = NearestNeighbors(
         n_neighbors=local_neighbors + 1,
         metric="euclidean",
@@ -299,7 +335,7 @@ def _graph_attribute_scores_from_components(
     spread_left: np.ndarray,
     spread_right: np.ndarray,
     clarity: np.ndarray,
-    graph_neighbors: int,
+    graph_neighbors: int | float,
     similarity_lambda: float,
     epsilon: float,
     block_size: int = 128,
@@ -352,17 +388,13 @@ def _graph_attribute_scores_from_components(
 
 def gaussian_pdmf_graph_attribute_scores(
     X: np.ndarray,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
-    graph_neighbors: int = 5,
+    graph_neighbors: int | float = 5,
     similarity_lambda: float = 0.5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute MY-V1 sparse-graph importance and its fixed union-KNN edges."""
 
-    if isinstance(graph_neighbors, bool) or not isinstance(graph_neighbors, int):
-        raise TypeError("graph_neighbors must be an integer")
-    if graph_neighbors < 1:
-        raise ValueError("graph_neighbors must be at least 1")
     if not np.isfinite(similarity_lambda) or not 0 < similarity_lambda < 1:
         raise ValueError("similarity_lambda must be a finite number in (0, 1)")
 
@@ -405,7 +437,7 @@ def _normalized_descending_ranks(
 def select_features_by_gaussian_pdmf(
     X: np.ndarray,
     n_features: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
     *,
     scale_selected: bool = False,
@@ -435,7 +467,7 @@ def select_features_by_gaussian_pdmf(
 def select_global_features_by_gaussian_pdmf(
     X: np.ndarray,
     p1: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Select the global ``p1`` attributes without labels or pseudo labels."""
@@ -448,9 +480,9 @@ def select_global_features_by_gaussian_pdmf(
 def select_local_features_by_gaussian_pdmf_graph(
     X: np.ndarray,
     p2: int,
-    neighbors: int = 5,
+    neighbors: int | float = 5,
     epsilon: float = 1e-8,
-    graph_neighbors: int = 5,
+    graph_neighbors: int | float = 5,
     similarity_lambda: float = 0.5,
     ranking_cache: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -458,10 +490,9 @@ def select_local_features_by_gaussian_pdmf_graph(
 
     values = np.asarray(X, dtype=float)
     local_count = max(1, min(int(p2), values.shape[1]))
-    if isinstance(graph_neighbors, bool) or not isinstance(graph_neighbors, int):
-        raise TypeError("graph_neighbors must be an integer")
-    if graph_neighbors < 1:
-        raise ValueError("graph_neighbors must be at least 1")
+    resolved_graph_neighbors = resolve_graph_neighbor_count(
+        graph_neighbors, values.shape[0]
+    )
     if not np.isfinite(similarity_lambda) or not 0 < similarity_lambda < 1:
         raise ValueError("similarity_lambda must be a finite number in (0, 1)")
 
@@ -487,7 +518,7 @@ def select_local_features_by_gaussian_pdmf_graph(
             spread_left,
             spread_right,
             clarity,
-            graph_neighbors,
+            resolved_graph_neighbors,
             similarity_lambda,
             epsilon,
         )
