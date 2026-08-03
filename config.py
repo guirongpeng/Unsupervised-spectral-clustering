@@ -41,7 +41,7 @@ MY_V0_PARAMS = {
 
 MY_V1_PARAMS = {
     "p1_ratio": 0.75,
-    "p2_values": tuple(range(4, 56, 4)),
+    "p2_values": tuple(range(50, 201, 10)),
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
     "pdmf_neighbors": 5,
     "pdmf_epsilon": 1e-8,
@@ -57,9 +57,9 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("plgb_fsc", "my_v0", "my_v1")  # 指定运行算法
-    datasets: tuple[str, ...] = (# "COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
-                                "PenDigits","Letter","Covertype")    # 指定运行数据集名
+    algorithms: tuple[str, ...] = ( "my_v1",)  # 指定运行算法:("plgb_fsc", "my_v0","my_v1")
+    datasets: tuple[str, ...] = ("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
+                                # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2)         # 指定运行种子
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
     output_root: Path = ROOT / "results"

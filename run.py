@@ -456,10 +456,18 @@ def _run_algorithm_grid(
                     writer.writerow(row)
                     stream.flush()
                     done += 1
+                    metric_text = (
+                        f"NMI={float(row['nmi']):.4f} "
+                        f"ACC={float(row['acc']):.4f} "
+                        f"F-measure={float(row['f_measure']):.4f}"
+                        if row["status"] == "success"
+                        else "NMI=N/A ACC=N/A F-measure=N/A"
+                    )
                     print(
+                        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] "
                         f"[{done}/{planned}] {algorithm} {dataset.name} seed={seed} "
                         f"p2={p2} theta={theta:.2f} {row['status']} "
-                        f"runtime={float(row['runtime_seconds']):.3f}s",
+                        f"runtime={float(row['runtime_seconds']):.3f}s {metric_text}",
                         flush=True,
                     )
     return _summarize(output_dir, config, algorithm, p1, valid_p2)
@@ -537,4 +545,4 @@ if __name__ == "__main__":
 # cd D:\Projects\zhengchuang\paper_team\liqiu\algorithm\unified_benchmark
 # ..\python\.venv\Scripts\python.exe .\run.py
 # ..\python\.venv\Scripts\python.exe .\run.py *> run.log
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > run-0801-2143.log 2>&1" -WindowStyle Hidden
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > run-0802-2105.log 2>&1" -WindowStyle Hidden
