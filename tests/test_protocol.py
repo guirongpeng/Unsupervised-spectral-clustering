@@ -9,11 +9,13 @@ from algorithms.my_v1.feature_selection import (
     resolve_graph_neighbor_count,
     resolve_pdmf_neighbor_count as resolve_my_v1_pdmf_neighbor_count,
 )
+from algorithms.my_v2 import MYV2
 from algorithms.plgb_fsc import PLGBFSC
 from config import (
     DATASETS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
+    MY_V2_PARAMS,
     PLGB_FSC_PARAMS,
     ExperimentConfig,
 )
@@ -26,6 +28,7 @@ from run import (
     _resolve_pdmf_neighbor_settings,
     _resolve_graph_neighbor_settings,
     _resolve_similarity_lambda_settings,
+    _resolve_stability_delta_settings,
 )
 
 
@@ -74,7 +77,20 @@ def test_my_v1_grid_supports_counts_and_ratios(monkeypatch) -> None:
     assert resolve_graph_neighbor_count(0.2, 21) == 4
 
 
-def test_run_can_create_both_algorithms() -> None:
+def test_my_v2_grid_uses_adaptive_counts(monkeypatch) -> None:
+    monkeypatch.setitem(MY_V2_PARAMS, "stability_delta_values", (0.02, 0.05))
+    monkeypatch.setitem(MY_V2_PARAMS, "pdmf_neighbors_counts", (3,))
+    monkeypatch.setitem(MY_V2_PARAMS, "pdmf_neighbors_ratios", (0.25,))
+    monkeypatch.setitem(MY_V2_PARAMS, "graph_neighbors_counts", (4,))
+    monkeypatch.setitem(MY_V2_PARAMS, "graph_neighbors_ratios", (0.2,))
+    monkeypatch.setitem(MY_V2_PARAMS, "pdmf_similarity_lambda_ratios", (0.3, 0.7))
+    assert _resolve_stability_delta_settings("my_v2") == (0.02, 0.05)
+    assert _resolve_pdmf_neighbor_settings("my_v2") == (3, 0.25)
+    assert _resolve_graph_neighbor_settings("my_v2") == (4, 0.2)
+    assert _resolve_similarity_lambda_settings("my_v2") == (0.3, 0.7)
+
+
+def test_run_can_create_all_algorithms() -> None:
     config = ExperimentConfig()
     plgb = _create_model(
         "plgb_fsc", config, p1=20, p2=5, theta=0.95, n_clusters=2, seed=1
@@ -85,9 +101,20 @@ def test_run_can_create_both_algorithms() -> None:
     my_v1 = _create_model(
         "my_v1", config, p1=20, p2=5, theta=0.95, n_clusters=2, seed=1
     )
+    my_v2 = _create_model(
+        "my_v2",
+        config,
+        p1=None,
+        p2=None,
+        theta=0.95,
+        n_clusters=2,
+        seed=1,
+        stability_delta=0.05,
+    )
     assert isinstance(plgb, PLGBFSC)
     assert isinstance(my_v0, MYV0)
     assert isinstance(my_v1, MYV1)
+    assert isinstance(my_v2, MYV2)
 
 
 def test_dataset_catalog_contains_both_papers_datasets() -> None:

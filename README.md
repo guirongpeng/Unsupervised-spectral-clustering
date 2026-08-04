@@ -21,9 +21,14 @@ datasets=("SuCancer",)
 seeds=(1, 2, 3)
 ```
 
-只运行 MY-V0 时设置 `algorithms=("my_v0",)`；只运行 PLGB-FSC 时设置
-`algorithms=("plgb_fsc",)`。正式论文实验时再把 `seeds` 改为
-`tuple(range(1, 11))`。
+可选算法为 `plgb_fsc`、`my_v0`、`my_v1` 和 `my_v2`。例如只运行
+MY-V2 时设置 `algorithms=("my_v2",)`。正式论文实验时再把 `seeds`
+改为 `tuple(range(1, 11))`。
+
+MY-V2 不配置固定 `p1/p2`。它通过 `MY_V2_PARAMS` 中的
+`stability_delta_values` 自动选择全局属性数及每个粒球的局部属性数；
+实际选择结果记录在 `all_runs.csv` 的 `selected_p1` 和
+`local_feature_count_*` 字段中。
 
 可用数据集：
 
@@ -62,7 +67,7 @@ results/<时间戳>/<数据集>/<算法名>/
 └── labels/
 ```
 
-同一个数据集同时运行两个算法时，`plgb_fsc/` 和 `my_v0/` 各自保存完整
+同一个数据集同时运行多个算法时，各算法目录分别保存完整
 参数网格结果；时间戳目录的 `benchmark_summary.csv` 每个算法一行，
 算法专属参数保存在 `best_params` JSON 字典中。
 

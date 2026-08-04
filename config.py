@@ -38,14 +38,14 @@ PLGB_FSC_PARAMS = {
 MY_V0_PARAMS = {
     # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
     "p1_counts": (),
-    "p1_ratios": (0.75,),
+    "p1_ratios": (0.25, 0.50, 0.75),
     # 组件3：粒球局部保留属性数。counts 范围 [1, p1-1]；ratios 按 ceil(p1 * ratio) 换算，范围 (0, 1)。
-    "p2_counts": tuple(range(4, 56, 4)),
-    "p2_ratios": (),
+    "p2_counts": (),
+    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
     # 组件3：伪纯度停止阈值，满足 pseudo_purity >= theta 且 ball_size < 8 时停止划分，范围 (0, 1]。
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
     # PDMF 左右邻域d。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
-    "pdmf_neighbors_counts": (5,),
+    "pdmf_neighbors_counts": (5,10,),
     "pdmf_neighbors_ratios": (),
     # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
@@ -54,19 +54,36 @@ MY_V0_PARAMS = {
 MY_V1_PARAMS = {
     # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
     "p1_counts": (),
-    "p1_ratios": (0.75,),
+    "p1_ratios": (0.25, 0.50, 0.75),
     # 组件3：粒球局部保留属性数。counts 范围 [1, p1-1]；ratios 按 ceil(p1 * ratio) 换算，范围 (0, 1)。
-    "p2_counts": tuple(range(4, 56, 4)),
-    "p2_ratios": (),
+    "p2_counts": (),
+    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
     # 组件3：伪纯度停止阈值，满足 pseudo_purity >= theta 且 ball_size < 8 时停止划分，范围 (0, 1]。
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
     # Gaussian-PDMF 左右局部邻域数。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
-    "pdmf_neighbors_counts": (5,),
+    "pdmf_neighbors_counts": (5,10),
     "pdmf_neighbors_ratios": (),
     # 稀疏 KNN 图每个样本的邻居数。counts >= 1 并截断到 m-1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
-    "graph_neighbors_counts": (5,),
+    "graph_neighbors_counts": (3,5,10),
     "graph_neighbors_ratios": (),
     # 边相似度中原始属性相似度的权重 lambda；1-lambda 为 PDMF 形状与展宽相似度权重，范围 (0, 1)。
+    "pdmf_similarity_lambda_ratios": (0.1,0.5,0.9),
+    # 数值稳定项，必须大于 0，不参与网格搜索。
+    "pdmf_epsilon": 1e-8,
+}
+
+MY_V2_PARAMS = {
+    # 组件2/3：熵相对损失和稀疏图相对损失共同使用的稳定阈值，范围 [0, +inf)。
+    "stability_delta_values": (0.001,0.01,0.05,0.1,0.3,0.5,0.7,0.9),
+    # 组件3：伪纯度停止阈值，满足 pseudo_purity >= theta 且 ball_size < 8 时停止划分，范围 (0, 1]。
+    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
+    # Gaussian-PDMF 左右局部邻域数。counts >= 1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
+    "pdmf_neighbors_counts": (5,10),
+    "pdmf_neighbors_ratios": (),
+    # 稀疏 KNN 图邻居数。counts >= 1；ratios 按 ceil((m-1) * ratio) 换算，范围 (0, 1]。
+    "graph_neighbors_counts": (5,10),
+    "graph_neighbors_ratios": (),
+    # Gaussian-PDMF 相似度中核心值项的权重，范围 (0, 1)。
     "pdmf_similarity_lambda_ratios": (0.5,),
     # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
@@ -80,10 +97,10 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ( "my_v1",)  # 指定运行算法:("plgb_fsc", "my_v0","my_v1")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2")
     datasets: tuple[str, ...] = ("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
-    seeds: tuple[int, ...] = (1,2)         # 指定运行种子
+    seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
     output_root: Path = ROOT / "results"
     run_id: str | None = None              # None: 自动生成，指定：使用指定ID
