@@ -339,32 +339,47 @@ def _graph_attribute_scores_from_components(
     similarity_lambda: float,
     epsilon: float,
     block_size: int = 128,
+    *,
+    precomputed_edges: np.ndarray | None = None,
+    precomputed_full_graph: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return leave-one-attribute-out sparse-graph importance scores."""
 
     scores = np.full(X.shape[1], -np.inf, dtype=float)
     active = np.flatnonzero(nonconstant)
-    edges = _union_knn_edges(X, graph_neighbors)
+    if (precomputed_edges is None) != (precomputed_full_graph is None):
+        raise ValueError("precomputed_edges and precomputed_full_graph must be paired")
+    if precomputed_edges is None:
+        edges = _union_knn_edges(X, graph_neighbors)
+        full_graph: np.ndarray | None = None
+    else:
+        edges = np.asarray(precomputed_edges, dtype=int)
+        full_graph = np.asarray(precomputed_full_graph, dtype=float).reshape(-1)
+        if edges.ndim != 2 or edges.shape[1] != 2:
+            raise ValueError("precomputed_edges must have shape (n_edges, 2)")
+        if full_graph.size != edges.shape[0]:
+            raise ValueError("precomputed_full_graph length must match edges")
     if active.size == 0 or edges.size == 0:
         return scores, edges
     if active.size == 1:
         scores[active[0]] = 1.0
         return scores, edges
 
-    full_graph = np.zeros(edges.shape[0], dtype=float)
-    for start in range(0, active.size, block_size):
-        block = active[start : start + block_size]
-        similarities = _edge_gaussian_pdmf_similarities(
-            X,
-            spread_left,
-            spread_right,
-            clarity,
-            edges,
-            block,
-            similarity_lambda,
-        )
-        full_graph += np.sum(similarities, axis=1)
-    full_graph /= active.size
+    if full_graph is None:
+        full_graph = np.zeros(edges.shape[0], dtype=float)
+        for start in range(0, active.size, block_size):
+            block = active[start : start + block_size]
+            similarities = _edge_gaussian_pdmf_similarities(
+                X,
+                spread_left,
+                spread_right,
+                clarity,
+                edges,
+                block,
+                similarity_lambda,
+            )
+            full_graph += np.sum(similarities, axis=1)
+        full_graph /= active.size
     denominator = float(np.dot(full_graph, full_graph) + epsilon)
     removal_scale = float((active.size - 1) ** 2)
 
@@ -505,6 +520,98 @@ def _stable_prefix_count(
     return active_order, 0.0, 0.0
 
 
+def _full_stability_curve(
+    X: np.ndarray,
+    order: np.ndarray,
+    sample_entropies: np.ndarray,
+    nonconstant: np.ndarray,
+    spread_left: np.ndarray,
+    spread_right: np.ndarray,
+    clarity: np.ndarray,
+    edges: np.ndarray,
+    full_graph: np.ndarray,
+    full_entropy: float,
+    similarity_lambda: float,
+    epsilon: float,
+    block_size: int = 128,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return entropy and graph losses for every ranked attribute prefix."""
+
+    active_order = np.asarray(order, dtype=int)[nonconstant[order]]
+    if active_order.size == 0:
+        return np.array([int(order[0])]), np.zeros(1), np.zeros(1)
+
+    log_intensity = np.log1p(-sample_entropies[:, active_order])
+    entropy_denominator = max(abs(full_entropy), epsilon)
+    graph_denominator = float(np.linalg.norm(full_graph) + epsilon)
+    entropy_curve = np.empty(active_order.size, dtype=float)
+    graph_curve = np.empty(active_order.size, dtype=float)
+    prefix_log = np.zeros(X.shape[0], dtype=float)
+    prefix_graph = np.zeros(edges.shape[0], dtype=float)
+
+    for start in range(0, active_order.size, block_size):
+        block = active_order[start : start + block_size]
+        stop = start + block.size
+        cumulative_log = prefix_log[:, None] + np.cumsum(
+            log_intensity[:, start:stop], axis=1
+        )
+        prefix_entropies = _entropy_of_log_weights(cumulative_log, axis=0)
+        entropy_curve[start:stop] = (
+            np.abs(prefix_entropies - full_entropy) / entropy_denominator
+        )
+
+        if edges.size:
+            similarities = _edge_gaussian_pdmf_similarities(
+                X,
+                spread_left,
+                spread_right,
+                clarity,
+                edges,
+                block,
+                similarity_lambda,
+            )
+            cumulative_graph = prefix_graph[:, None] + np.cumsum(
+                similarities, axis=1
+            )
+            counts = np.arange(start + 1, stop + 1, dtype=float)
+            prefix_means = cumulative_graph / counts[None, :]
+            graph_curve[start:stop] = np.linalg.norm(
+                prefix_means - full_graph[:, None], axis=0
+            ) / graph_denominator
+            prefix_graph = cumulative_graph[:, -1]
+        else:
+            graph_curve[start:stop] = 0.0
+        prefix_log = cumulative_log[:, -1]
+
+    entropy_curve[-1] = 0.0
+    graph_curve[-1] = 0.0
+    return active_order, entropy_curve, graph_curve
+
+
+def _select_from_stability_curve(
+    active_order: np.ndarray,
+    entropy_curve: np.ndarray,
+    graph_curve: np.ndarray,
+    stability_delta: float,
+    minimum: int,
+) -> tuple[np.ndarray, float, float]:
+    """Select the first prefix satisfying a requested stability threshold."""
+
+    minimum = min(max(1, minimum), active_order.size)
+    counts = np.arange(1, active_order.size + 1)
+    feasible = np.flatnonzero(
+        (counts >= minimum)
+        & (entropy_curve <= stability_delta)
+        & (graph_curve <= stability_delta)
+    )
+    position = int(feasible[0]) if feasible.size else active_order.size - 1
+    return (
+        active_order[: position + 1],
+        float(entropy_curve[position]),
+        float(graph_curve[position]),
+    )
+
+
 def _adaptive_stable_selection(
     X: np.ndarray,
     stability_delta: float,
@@ -516,6 +623,7 @@ def _adaptive_stable_selection(
     local_ranking: bool,
     scale_selected: bool,
     ranking_cache: dict[str, object] | None = None,
+    stability_curve_cache: dict[str, object] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """Rank attributes and select the smallest entropy-graph-stable prefix."""
 
@@ -536,16 +644,16 @@ def _adaptive_stable_selection(
         graph_neighbors, values.shape[0]
     )
     contiguous = np.ascontiguousarray(values)
-    cache_signature = (
+    base_cache_signature = (
         values.shape,
         hashlib.blake2b(contiguous.view(np.uint8), digest_size=16).digest(),
         resolved_neighbors,
         float(epsilon),
         resolved_graph_neighbors,
         float(similarity_lambda),
-        float(stability_delta),
         local_ranking,
     )
+    cache_signature = (*base_cache_signature, float(stability_delta))
 
     required = {
         "selected_indices",
@@ -576,6 +684,49 @@ def _adaptive_stable_selection(
                 float(np.asarray(ranking_cache["graph_loss"]).item()),
             )
 
+    curve_required = {
+        "active_order",
+        "scores",
+        "entropy_curve",
+        "graph_curve",
+        "base_cache_signature",
+    }
+    if (
+        stability_curve_cache is not None
+        and curve_required <= stability_curve_cache.keys()
+        and stability_curve_cache["base_cache_signature"] == base_cache_signature
+    ):
+        active_order = np.asarray(
+            stability_curve_cache["active_order"], dtype=int
+        ).reshape(-1)
+        scores = np.asarray(stability_curve_cache["scores"], dtype=float).reshape(-1)
+        entropy_curve = np.asarray(
+            stability_curve_cache["entropy_curve"], dtype=float
+        ).reshape(-1)
+        graph_curve = np.asarray(
+            stability_curve_cache["graph_curve"], dtype=float
+        ).reshape(-1)
+        if (
+            active_order.size >= 1
+            and np.all((0 <= active_order) & (active_order < values.shape[1]))
+            and scores.size == values.shape[1]
+            and entropy_curve.size == active_order.size
+            and graph_curve.size == active_order.size
+        ):
+            selected_indices, entropy_loss, graph_loss = (
+                _select_from_stability_curve(
+                    active_order,
+                    entropy_curve,
+                    graph_curve,
+                    stability_delta,
+                    minimum=1,
+                )
+            )
+            selected = values[:, selected_indices]
+            if scale_selected:
+                selected = minmax_scale_like_matlab(selected)
+            return selected, selected_indices, scores, entropy_loss, graph_loss
+
     sample_entropies, nonconstant, spread_left, spread_right, clarity = (
         _gaussian_pdmf_components(
             values, neighbors=resolved_neighbors, epsilon=epsilon
@@ -605,6 +756,8 @@ def _adaptive_stable_selection(
             resolved_graph_neighbors,
             similarity_lambda,
             epsilon,
+            precomputed_edges=edges,
+            precomputed_full_graph=full_graph,
         )
         entropy_ranks = _normalized_descending_ranks(
             entropy_scores, single_entropies
@@ -626,22 +779,50 @@ def _adaptive_stable_selection(
         order = np.lexsort((feature_indices, -single_entropies, -entropy_scores))
         minimum = 1
 
-    selected_indices, entropy_loss, graph_loss = _stable_prefix_count(
-        values,
-        order,
-        sample_entropies,
-        nonconstant,
-        spread_left,
-        spread_right,
-        clarity,
-        edges,
-        full_graph,
-        full_entropy,
-        stability_delta,
-        similarity_lambda,
-        epsilon,
-        minimum,
-    )
+    if stability_curve_cache is None:
+        selected_indices, entropy_loss, graph_loss = _stable_prefix_count(
+            values,
+            order,
+            sample_entropies,
+            nonconstant,
+            spread_left,
+            spread_right,
+            clarity,
+            edges,
+            full_graph,
+            full_entropy,
+            stability_delta,
+            similarity_lambda,
+            epsilon,
+            minimum,
+        )
+    else:
+        active_order, entropy_curve, graph_curve = _full_stability_curve(
+            values,
+            order,
+            sample_entropies,
+            nonconstant,
+            spread_left,
+            spread_right,
+            clarity,
+            edges,
+            full_graph,
+            full_entropy,
+            similarity_lambda,
+            epsilon,
+        )
+        selected_indices, entropy_loss, graph_loss = _select_from_stability_curve(
+            active_order,
+            entropy_curve,
+            graph_curve,
+            stability_delta,
+            minimum,
+        )
+        stability_curve_cache["active_order"] = active_order.copy()
+        stability_curve_cache["scores"] = scores.copy()
+        stability_curve_cache["entropy_curve"] = entropy_curve.copy()
+        stability_curve_cache["graph_curve"] = graph_curve.copy()
+        stability_curve_cache["base_cache_signature"] = base_cache_signature
     selected = values[:, selected_indices]
     if scale_selected:
         selected = minmax_scale_like_matlab(selected)
@@ -740,6 +921,7 @@ def select_global_features_by_gaussian_pdmf(
     epsilon: float = 1e-8,
     graph_neighbors: int | float = 5,
     similarity_lambda: float = 0.5,
+    stability_curve_cache: dict[str, object] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """Select the smallest globally entropy-graph-stable attribute prefix."""
 
@@ -752,6 +934,7 @@ def select_global_features_by_gaussian_pdmf(
         similarity_lambda=similarity_lambda,
         local_ranking=False,
         scale_selected=False,
+        stability_curve_cache=stability_curve_cache,
     )
 
 

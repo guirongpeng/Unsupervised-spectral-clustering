@@ -27,6 +27,7 @@ class MYV2Config:
     split_kmeans_max_iter: int = 3
     tcut_kmeans_max_iter: int = 100
     tcut_kmeans_n_init: int = 3
+    ball_parallel_jobs: int = 1
     keep_matlab_split_rule: bool = True
 
     def __post_init__(self) -> None:
@@ -65,6 +66,12 @@ class MYV2Config:
             raise ValueError("tcut_kmeans_max_iter must be at least 1")
         if self.tcut_kmeans_n_init < 1:
             raise ValueError("tcut_kmeans_n_init must be at least 1")
+        if (
+            isinstance(self.ball_parallel_jobs, bool)
+            or not isinstance(self.ball_parallel_jobs, int)
+            or self.ball_parallel_jobs < 1
+        ):
+            raise ValueError("ball_parallel_jobs must be an integer >= 1")
         if not isinstance(self.keep_matlab_split_rule, bool):
             raise TypeError("keep_matlab_split_rule must be a bool")
 

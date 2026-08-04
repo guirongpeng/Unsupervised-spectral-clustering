@@ -131,6 +131,9 @@ def _validate_algorithm_config(algorithm: str) -> None:
             not math.isfinite(value) or value < 0 for value in deltas
         ):
             raise ValueError("my_v2: stability_delta_values must be in [0, +inf)")
+        jobs = params["ball_parallel_jobs"]
+        if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+            raise ValueError("my_v2: ball_parallel_jobs must be an integer >= 1")
 
 
 def _validate_count_ratio_options(
@@ -541,7 +544,9 @@ def _create_model(
     stability_delta: float | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
+    global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
+    local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
 ) -> PLGBFSC | MYV0 | MYV1 | MYV2:
     algorithm_config = _get_algorithm_config(algorithm)
     if algorithm != "my_v2" and (p1 is None or p2 is None):
@@ -611,12 +616,15 @@ def _create_model(
                 pdmf_epsilon=float(algorithm_config["pdmf_epsilon"]),
                 graph_neighbors=graph_neighbors,
                 pdmf_similarity_lambda=pdmf_similarity_lambda,
+                ball_parallel_jobs=int(algorithm_config["ball_parallel_jobs"]),
             ),
             n_clusters=n_clusters,
             random_state=seed,
             precomputed_pseudo_labels=precomputed_pseudo_labels,
             precomputed_global_selection=precomputed_global_selection,
+            global_stability_curve_cache=global_stability_curve_cache,
             root_feature_ranking_cache=root_feature_ranking_cache,
+            local_feature_selection_cache=local_feature_selection_cache,
         )
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
@@ -666,6 +674,7 @@ def _algorithm_parameters(
             "pdmf_neighbors_counts": algorithm_config["pdmf_neighbors_counts"],
             "pdmf_neighbors_ratios": algorithm_config["pdmf_neighbors_ratios"],
             "pdmf_epsilon": algorithm_config["pdmf_epsilon"],
+            "ball_parallel_jobs": algorithm_config["ball_parallel_jobs"],
             "graph_neighbors_counts": algorithm_config["graph_neighbors_counts"],
             "graph_neighbors_ratios": algorithm_config["graph_neighbors_ratios"],
             "pdmf_similarity_lambda_ratios": algorithm_config[
@@ -792,7 +801,13 @@ def _run_algorithm_grid(
     run_fields = V2_RUN_FIELDS if algorithm == "my_v2" else RUN_FIELDS
     pseudo_labels_by_seed: dict[int, np.ndarray] = {}
     global_selection_cache: dict[tuple[str, ...], tuple[object, ...]] = {}
+    global_stability_curve_caches: dict[
+        tuple[str, ...], dict[str, object]
+    ] = {}
     root_feature_ranking_caches: dict[tuple[str, ...], dict[str, object]] = {}
+    local_feature_selection_caches: dict[
+        tuple[str, ...], dict[tuple[object, ...], np.ndarray]
+    ] = {}
     planned = len(config.seeds) * len(parameter_combinations) * len(theta_values)
     with all_runs_path.open(mode, encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=run_fields)
@@ -829,6 +844,11 @@ def _run_algorithm_grid(
                         similarity_lambda_text,
                     )
                     root_cache_key = global_cache_key
+                    curve_cache_key = (
+                        pdmf_neighbors_text,
+                        graph_neighbors_text,
+                        similarity_lambda_text,
+                    )
                 else:
                     global_cache_key = (str(p1), pdmf_neighbors_text)
                     root_cache_key = (
@@ -837,9 +857,21 @@ def _run_algorithm_grid(
                         graph_neighbors_text,
                         similarity_lambda_text,
                     )
+                    curve_cache_key = ()
+                global_stability_curve_cache = (
+                    global_stability_curve_caches.setdefault(curve_cache_key, {})
+                    if algorithm == "my_v2"
+                    and len(stability_delta_settings) > 1
+                    else None
+                )
                 root_feature_ranking_cache = (
                     root_feature_ranking_caches.setdefault(root_cache_key, {})
                     if algorithm in {"my_v1", "my_v2"}
+                    else None
+                )
+                local_feature_selection_cache = (
+                    local_feature_selection_caches.setdefault(root_cache_key, {})
+                    if algorithm == "my_v2"
                     else None
                 )
                 for theta in theta_values:
@@ -899,7 +931,13 @@ def _run_algorithm_grid(
                             precomputed_global_selection=global_selection_cache.get(
                                 global_cache_key
                             ),
+                            global_stability_curve_cache=(
+                                global_stability_curve_cache
+                            ),
                             root_feature_ranking_cache=root_feature_ranking_cache,
+                            local_feature_selection_cache=(
+                                local_feature_selection_cache
+                            ),
                         )
                         labels = model.fit_predict(X.copy())
                         if seed not in pseudo_labels_by_seed:
@@ -1068,6 +1106,7 @@ def main() -> int:
                     stability_delta=float(best["stability_delta"]),
                     pdmf_neighbors=best["pdmf_neighbors"],
                     pdmf_epsilon=algorithm_config["pdmf_epsilon"],
+                    ball_parallel_jobs=algorithm_config["ball_parallel_jobs"],
                     graph_neighbors=best["graph_neighbors"],
                     pdmf_similarity_lambda=best["pdmf_similarity_lambda"],
                 )

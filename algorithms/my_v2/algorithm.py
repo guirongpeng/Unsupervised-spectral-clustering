@@ -11,7 +11,11 @@ from .common.preprocessing import minmax_scale_like_matlab
 from .common.transfer_cut import TransferCutResult, run_transfer_cut
 from .config import MYV2Config
 from .feature_selection import select_global_features_by_gaussian_pdmf
-from .granular_ball import GranularBall, generate_anchors
+from .granular_ball import (
+    GranularBall,
+    LocalFeatureSelectionCache,
+    generate_anchors,
+)
 from .weighted_kmeans import weighted_kmeans
 
 
@@ -61,7 +65,9 @@ def run_my_v2(
     seed: int | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: GlobalSelectionCache | None = None,
+    global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
+    local_feature_selection_cache: LocalFeatureSelectionCache | None = None,
 ) -> MYV2Result:
     """Run MY-V2 with adaptive global and granular-ball-local reduction."""
 
@@ -99,6 +105,7 @@ def run_my_v2(
             epsilon=config.pdmf_epsilon,
             graph_neighbors=config.graph_neighbors,
             similarity_lambda=config.pdmf_similarity_lambda,
+            stability_curve_cache=global_stability_curve_cache,
         )
     else:
         (
@@ -136,6 +143,8 @@ def run_my_v2(
         seed=seed,
         keep_matlab_split_rule=config.keep_matlab_split_rule,
         root_ranking_cache=root_feature_ranking_cache,
+        local_feature_selection_cache=local_feature_selection_cache,
+        ball_parallel_jobs=config.ball_parallel_jobs,
     )
 
     # Component 4: retain the PLGB-FSC sample-anchor graph and Transfer Cut.
@@ -195,7 +204,9 @@ class MYV2(BenchmarkAlgorithm):
         random_state: int = 1,
         precomputed_pseudo_labels: np.ndarray | None = None,
         precomputed_global_selection: GlobalSelectionCache | None = None,
+        global_stability_curve_cache: dict[str, object] | None = None,
         root_feature_ranking_cache: dict[str, object] | None = None,
+        local_feature_selection_cache: LocalFeatureSelectionCache | None = None,
     ) -> None:
         if isinstance(random_state, bool) or not isinstance(random_state, int):
             raise TypeError("random_state must be an integer")
@@ -204,7 +215,9 @@ class MYV2(BenchmarkAlgorithm):
         self.random_state = random_state
         self._precomputed_pseudo_labels = precomputed_pseudo_labels
         self._precomputed_global_selection = precomputed_global_selection
+        self._global_stability_curve_cache = global_stability_curve_cache
         self._root_feature_ranking_cache = root_feature_ranking_cache
+        self._local_feature_selection_cache = local_feature_selection_cache
 
     def fit(self, X: np.ndarray) -> "MYV2":
         result = run_my_v2(
@@ -214,7 +227,9 @@ class MYV2(BenchmarkAlgorithm):
             seed=self.random_state,
             precomputed_pseudo_labels=self._precomputed_pseudo_labels,
             precomputed_global_selection=self._precomputed_global_selection,
+            global_stability_curve_cache=self._global_stability_curve_cache,
             root_feature_ranking_cache=self._root_feature_ranking_cache,
+            local_feature_selection_cache=self._local_feature_selection_cache,
         )
         self.labels_ = np.asarray(result.labels, dtype=int).reshape(-1)
         self.result_ = result

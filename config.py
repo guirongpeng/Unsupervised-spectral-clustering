@@ -87,6 +87,8 @@ MY_V2_PARAMS = {
     "pdmf_similarity_lambda_ratios": (0.5,),
     # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
+    # 同一轮粒球划分的线程数；1 为串行，>=2 为并行，不参与参数网格。
+    "ball_parallel_jobs": 2,
 }
 
 @dataclass(frozen=True)
@@ -98,7 +100,7 @@ class DatasetConfig:
 @dataclass(frozen=True)
 class ExperimentConfig:
     algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2")
-    datasets: tuple[str, ...] = ("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
+    datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
@@ -130,3 +132,21 @@ DATASETS = {
 
 # 当前先验证 SuCancer，完整遍历参数网格并运行 3 个 seed。
 EXPERIMENT = ExperimentConfig()
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_COIL20.log 2>&1" -WindowStyle Hidden
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_ORL.log 2>&1" -WindowStyle Hidden
+
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_Yale.log 2>&1" -WindowStyle Hidden
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_warpPIE10P.log 2>&1" -WindowStyle Hidden
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_GLIOMA.log 2>&1" -WindowStyle Hidden
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_ALLAML.log 2>&1" -WindowStyle Hidden
+
+# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_SuCancer.log 2>&1" -WindowStyle Hidden
+
+
+# Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*only_plgb_fsc_with_SuCancer.log*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
