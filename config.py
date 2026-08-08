@@ -88,7 +88,32 @@ MY_V2_PARAMS = {
     # 数值稳定项，必须大于 0，不参与网格搜索。
     "pdmf_epsilon": 1e-8,
     # 同一轮粒球划分的线程数；1 为串行，>=2 为并行，不参与参数网格。
-    "ball_parallel_jobs": 2,
+    "ball_parallel_jobs": 4,
+}
+
+MY_V3_PARAMS = {
+    # 组件2：全局保留属性数；counts 使用具体数量，ratios 使用特征比例。
+    "p1_counts": (),
+    "p1_ratios": (0.25, 0.50, 0.75),
+    # 组件3：每个粒球保留的局部属性数。
+    "p2_counts": (),
+    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
+    # 伪纯度停止阈值：pseudo_purity >= theta 且 ball_size < 8。
+    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
+    # Gaussian-PDMF 邻域和局部互惠 KNN 图邻域。
+    "pdmf_neighbors_counts": (5, 10),
+    "pdmf_neighbors_ratios": (),
+    "graph_neighbors_counts": (3, 5, 10),
+    "graph_neighbors_ratios": (),
+    # PDMF 边相似度中原始相似度的权重 lambda。
+    "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
+    # 属性冗余惩罚 beta；beta=0 可作为 V1 风格消融。
+    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5),
+    # V3 默认自适应融合熵重要性和图重要性；图结构选项固定开启。
+    "fusion_alpha_mode": "adaptive",
+    "mutual_knn": True,
+    "self_tuning_graph": True,
+    "pdmf_epsilon": 1e-8,
 }
 
 @dataclass(frozen=True)
@@ -99,7 +124,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子

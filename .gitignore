@@ -1,4 +1,6 @@
 __pycache__/
 .pytest_cache/
 results/
+v2_all_results/
 *.log
+run_v2_fixed_best_100seeds.py

@@ -17,6 +17,7 @@ import numpy as np
 from algorithms.my_v0 import MYV0, MYV0Config
 from algorithms.my_v1 import MYV1, MYV1Config
 from algorithms.my_v2 import MYV2, MYV2Config
+from algorithms.my_v3 import MYV3, MYV3Config
 from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig
 from config import (
     DATASETS,
@@ -24,6 +25,7 @@ from config import (
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
+    MY_V3_PARAMS,
     PLGB_FSC_PARAMS,
     ExperimentConfig,
 )
@@ -70,6 +72,13 @@ V2_RUN_FIELDS = (
     "global_entropy_loss",
     "global_graph_loss",
 )
+V3_RUN_FIELDS = (
+    *RUN_FIELDS,
+    "redundancy_beta",
+    "fusion_alpha_mode",
+    "mutual_knn",
+    "self_tuning_graph",
+)
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
@@ -81,6 +90,8 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
         return MY_V1_PARAMS
     if algorithm == "my_v2":
         return MY_V2_PARAMS
+    if algorithm == "my_v3":
+        return MY_V3_PARAMS
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
@@ -89,7 +100,7 @@ def _validate_algorithm_config(algorithm: str) -> None:
     theta_values = tuple(params["theta_values"])
     if algorithm != "my_v2":
         _validate_count_ratio_options(algorithm, params, "p1", minimum_count=2)
-        if algorithm in {"my_v0", "my_v1"}:
+        if algorithm in {"my_v0", "my_v1", "my_v3"}:
             _validate_count_ratio_options(
                 algorithm,
                 params,
@@ -103,15 +114,15 @@ def _validate_algorithm_config(algorithm: str) -> None:
                 raise ValueError(f"{algorithm}: p2_values must contain positive integers")
     if not theta_values or any(not 0.0 < theta <= 1.0 for theta in theta_values):
         raise ValueError(f"{algorithm}: theta_values must be in (0, 1]")
-    if algorithm in {"my_v0", "my_v1", "my_v2"}:
+    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
         _validate_count_ratio_options(
             algorithm, params, "pdmf_neighbors", minimum_count=1
         )
-    if algorithm in {"my_v0", "my_v1", "my_v2"}:
+    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
         epsilon = float(params["pdmf_epsilon"])
         if not math.isfinite(epsilon) or epsilon <= 0:
             raise ValueError(f"{algorithm}: pdmf_epsilon must be positive")
-    if algorithm in {"my_v1", "my_v2"}:
+    if algorithm in {"my_v1", "my_v2", "my_v3"}:
         _validate_count_ratio_options(
             algorithm, params, "graph_neighbors", minimum_count=1
         )
@@ -134,6 +145,16 @@ def _validate_algorithm_config(algorithm: str) -> None:
         jobs = params["ball_parallel_jobs"]
         if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
             raise ValueError("my_v2: ball_parallel_jobs must be an integer >= 1")
+    if algorithm == "my_v3":
+        betas = tuple(float(value) for value in params["redundancy_beta_values"])
+        if not betas or any(not math.isfinite(value) or value < 0 for value in betas):
+            raise ValueError("my_v3: redundancy_beta_values must be non-negative")
+        if params["fusion_alpha_mode"] not in {"adaptive", "equal"}:
+            raise ValueError("my_v3: fusion_alpha_mode must be adaptive or equal")
+        if not isinstance(params["mutual_knn"], bool):
+            raise ValueError("my_v3: mutual_knn must be boolean")
+        if not isinstance(params["self_tuning_graph"], bool):
+            raise ValueError("my_v3: self_tuning_graph must be boolean")
 
 
 def _validate_count_ratio_options(
@@ -185,7 +206,7 @@ def _resolve_p1_values(algorithm: str, n_features: int) -> tuple[int, ...]:
 
 def _resolve_p2_values(algorithm: str, p1: int) -> tuple[int, ...]:
     params = _get_algorithm_config(algorithm)
-    if algorithm in {"my_v0", "my_v1"}:
+    if algorithm in {"my_v0", "my_v1", "my_v3"}:
         candidates = [int(value) for value in params["p2_counts"]]
         candidates.extend(
             math.ceil(float(ratio) * p1) for ratio in params["p2_ratios"]
@@ -198,7 +219,7 @@ def _resolve_p2_values(algorithm: str, p1: int) -> tuple[int, ...]:
 def _resolve_pdmf_neighbor_settings(
     algorithm: str,
 ) -> tuple[int | float | None, ...]:
-    if algorithm not in {"my_v0", "my_v1", "my_v2"}:
+    if algorithm not in {"my_v0", "my_v1", "my_v2", "my_v3"}:
         return (None,)
     return _resolve_neighbor_settings(algorithm, "pdmf_neighbors")
 
@@ -226,7 +247,7 @@ def _resolve_neighbor_settings(
 def _resolve_graph_neighbor_settings(
     algorithm: str,
 ) -> tuple[int | float | None, ...]:
-    if algorithm not in {"my_v1", "my_v2"}:
+    if algorithm not in {"my_v1", "my_v2", "my_v3"}:
         return (None,)
     return _resolve_neighbor_settings(algorithm, "graph_neighbors")
 
@@ -234,7 +255,7 @@ def _resolve_graph_neighbor_settings(
 def _resolve_similarity_lambda_settings(
     algorithm: str,
 ) -> tuple[float | None, ...]:
-    if algorithm not in {"my_v1", "my_v2"}:
+    if algorithm not in {"my_v1", "my_v2", "my_v3"}:
         return (None,)
     return tuple(
         dict.fromkeys(
@@ -255,6 +276,21 @@ def _resolve_stability_delta_settings(
         dict.fromkeys(
             float(value)
             for value in _get_algorithm_config(algorithm)["stability_delta_values"]
+        )
+    )
+
+
+def _resolve_redundancy_beta_settings(
+    algorithm: str,
+) -> tuple[float | None, ...]:
+    if algorithm != "my_v3":
+        return (None,)
+    return tuple(
+        dict.fromkeys(
+            float(value)
+            for value in _get_algorithm_config(algorithm)[
+                "redundancy_beta_values"
+            ]
         )
     )
 
@@ -327,31 +363,31 @@ def _summarize(
     output_dir: Path,
     config: ExperimentConfig,
     algorithm: str,
-    parameter_combinations: tuple[
-        tuple[
-            int | None,
-            int | None,
-            int | float | None,
-            int | float | None,
-            float | None,
-            float | None,
-        ],
-        ...,
-    ],
+    parameter_combinations: tuple[tuple[object, ...], ...],
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
     theta_values = tuple(algorithm_config["theta_values"])
     rows = _read_csv(output_dir / "all_runs.csv")
-    parameter_fields = (
-        (
+    if algorithm == "my_v2":
+        parameter_fields = (
             "stability_delta",
             "pdmf_neighbors",
             "graph_neighbors",
             "pdmf_similarity_lambda",
             "theta",
         )
-        if algorithm == "my_v2"
-        else (
+    elif algorithm == "my_v3":
+        parameter_fields = (
+            "p1",
+            "p2",
+            "pdmf_neighbors",
+            "graph_neighbors",
+            "pdmf_similarity_lambda",
+            "theta",
+            "redundancy_beta",
+        )
+    else:
+        parameter_fields = (
             "p1",
             "p2",
             "pdmf_neighbors",
@@ -359,7 +395,6 @@ def _summarize(
             "pdmf_similarity_lambda",
             "theta",
         )
-    )
     grouped: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         if row["status"] == "success":
@@ -396,11 +431,13 @@ def _summarize(
         graph_neighbors,
         similarity_lambda,
         stability_delta,
+        redundancy_beta,
     ) in parameter_combinations:
         pdmf_neighbors_text = _format_pdmf_neighbors(pdmf_neighbors)
         graph_neighbors_text = _format_graph_neighbors(graph_neighbors)
         similarity_lambda_text = _format_similarity_lambda(similarity_lambda)
         stability_delta_text = _format_stability_delta(stability_delta)
+        redundancy_beta_text = "" if redundancy_beta is None else f"{float(redundancy_beta):.12g}"
         for theta in theta_values:
             parameter_values: dict[str, object] = {
                 "pdmf_neighbors": pdmf_neighbors_text,
@@ -410,6 +447,12 @@ def _summarize(
             }
             if algorithm == "my_v2":
                 parameter_values["stability_delta"] = stability_delta_text
+            elif algorithm == "my_v3":
+                parameter_values.update(
+                    p1=p1,
+                    p2=p2,
+                    redundancy_beta=redundancy_beta_text,
+                )
             else:
                 parameter_values.update(p1=p1, p2=p2)
             key = tuple(str(parameter_values[field]) for field in parameter_fields)
@@ -542,12 +585,13 @@ def _create_model(
     graph_neighbors: int | float | None = None,
     pdmf_similarity_lambda: float | None = None,
     stability_delta: float | None = None,
+    redundancy_beta: float | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3:
     algorithm_config = _get_algorithm_config(algorithm)
     if algorithm != "my_v2" and (p1 is None or p2 is None):
         raise ValueError(f"{algorithm}: p1 and p2 are required")
@@ -626,6 +670,35 @@ def _create_model(
             root_feature_ranking_cache=root_feature_ranking_cache,
             local_feature_selection_cache=local_feature_selection_cache,
         )
+    if algorithm == "my_v3":
+        if pdmf_neighbors is None:
+            pdmf_neighbors = _resolve_pdmf_neighbor_settings(algorithm)[0]
+        if graph_neighbors is None:
+            graph_neighbors = _resolve_graph_neighbor_settings(algorithm)[0]
+        if pdmf_similarity_lambda is None:
+            pdmf_similarity_lambda = _resolve_similarity_lambda_settings(algorithm)[0]
+        if redundancy_beta is None:
+            redundancy_beta = _resolve_redundancy_beta_settings(algorithm)[0]
+        return MYV3(
+            MYV3Config(
+                p1=p1,
+                p2=p2,
+                purity=theta,
+                pdmf_neighbors=pdmf_neighbors,
+                pdmf_epsilon=float(algorithm_config["pdmf_epsilon"]),
+                graph_neighbors=graph_neighbors,
+                pdmf_similarity_lambda=pdmf_similarity_lambda,
+                redundancy_beta=float(redundancy_beta),
+                fusion_alpha_mode=str(algorithm_config["fusion_alpha_mode"]),
+                mutual_knn=bool(algorithm_config["mutual_knn"]),
+                self_tuning_graph=bool(algorithm_config["self_tuning_graph"]),
+            ),
+            n_clusters=n_clusters,
+            random_state=seed,
+            precomputed_pseudo_labels=precomputed_pseudo_labels,
+            precomputed_global_selection=precomputed_global_selection,
+            root_feature_ranking_cache=root_feature_ranking_cache,
+        )
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
@@ -681,6 +754,25 @@ def _algorithm_parameters(
                 "pdmf_similarity_lambda_ratios"
             ],
         }
+    if algorithm == "my_v3":
+        return {
+            "global_selection": "Gaussian-PDMF importance with redundancy penalty",
+            "local_selection": "adaptive entropy-graph fusion with redundancy penalty",
+            "p2_counts": algorithm_config["p2_counts"],
+            "p2_ratios": algorithm_config["p2_ratios"],
+            "pdmf_neighbors_counts": algorithm_config["pdmf_neighbors_counts"],
+            "pdmf_neighbors_ratios": algorithm_config["pdmf_neighbors_ratios"],
+            "pdmf_epsilon": algorithm_config["pdmf_epsilon"],
+            "graph_neighbors_counts": algorithm_config["graph_neighbors_counts"],
+            "graph_neighbors_ratios": algorithm_config["graph_neighbors_ratios"],
+            "pdmf_similarity_lambda_ratios": algorithm_config[
+                "pdmf_similarity_lambda_ratios"
+            ],
+            "redundancy_beta_values": algorithm_config["redundancy_beta_values"],
+            "fusion_alpha_mode": algorithm_config["fusion_alpha_mode"],
+            "mutual_knn": algorithm_config["mutual_knn"],
+            "self_tuning_graph": algorithm_config["self_tuning_graph"],
+        }
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
@@ -708,6 +800,7 @@ def _run_algorithm_grid(
     graph_neighbor_settings = _resolve_graph_neighbor_settings(algorithm)
     similarity_lambda_settings = _resolve_similarity_lambda_settings(algorithm)
     stability_delta_settings = _resolve_stability_delta_settings(algorithm)
+    redundancy_beta_settings = _resolve_redundancy_beta_settings(algorithm)
     parameter_combinations = tuple(
         (
             p1,
@@ -716,12 +809,14 @@ def _run_algorithm_grid(
             graph_neighbors,
             similarity_lambda,
             stability_delta,
+            redundancy_beta,
         )
         for p1, p2 in parameter_pairs
         for pdmf_neighbors in pdmf_neighbor_settings
         for graph_neighbors in graph_neighbor_settings
         for similarity_lambda in similarity_lambda_settings
         for stability_delta in stability_delta_settings
+        for redundancy_beta in redundancy_beta_settings
     )
 
     output_dir = config.output_root / run_id / dataset.name / algorithm
@@ -732,16 +827,26 @@ def _run_algorithm_grid(
     labels_dir.mkdir(exist_ok=True)
     all_runs_path = output_dir / "all_runs.csv"
     previous = _read_csv(all_runs_path) if config.resume else []
-    completed_fields = (
-        (
+    if algorithm == "my_v2":
+        completed_fields = (
             "stability_delta",
             "pdmf_neighbors",
             "graph_neighbors",
             "pdmf_similarity_lambda",
             "theta",
         )
-        if algorithm == "my_v2"
-        else (
+    elif algorithm == "my_v3":
+        completed_fields = (
+            "p1",
+            "p2",
+            "pdmf_neighbors",
+            "graph_neighbors",
+            "pdmf_similarity_lambda",
+            "theta",
+            "redundancy_beta",
+        )
+    else:
+        completed_fields = (
             "p1",
             "p2",
             "pdmf_neighbors",
@@ -749,7 +854,6 @@ def _run_algorithm_grid(
             "pdmf_similarity_lambda",
             "theta",
         )
-    )
     completed = {
         (int(row["seed"]), *(row[field] for field in completed_fields))
         for row in previous
@@ -770,6 +874,8 @@ def _run_algorithm_grid(
             "p1_p2_pairs": parameter_pairs,
         }
     )
+    if algorithm == "my_v3":
+        selection_parameters["redundancy_beta_values"] = tuple(redundancy_beta_settings)
 
     _write_json(
         output_dir / "experiment_config.json",
@@ -798,7 +904,11 @@ def _run_algorithm_grid(
 
     mode = "a" if previous else "w"
     X = minmax_scale(dataset.X)
-    run_fields = V2_RUN_FIELDS if algorithm == "my_v2" else RUN_FIELDS
+    run_fields = (
+        V2_RUN_FIELDS if algorithm == "my_v2"
+        else V3_RUN_FIELDS if algorithm == "my_v3"
+        else RUN_FIELDS
+    )
     pseudo_labels_by_seed: dict[int, np.ndarray] = {}
     global_selection_cache: dict[tuple[str, ...], tuple[object, ...]] = {}
     global_stability_curve_caches: dict[
@@ -822,15 +932,17 @@ def _run_algorithm_grid(
                 graph_neighbors,
                 similarity_lambda,
                 stability_delta,
+                redundancy_beta,
             ) in parameter_combinations:
                 pdmf_neighbors_text = _format_pdmf_neighbors(pdmf_neighbors)
                 graph_neighbors_text = _format_graph_neighbors(graph_neighbors)
                 similarity_lambda_text = _format_similarity_lambda(similarity_lambda)
                 stability_delta_text = _format_stability_delta(stability_delta)
+                redundancy_beta_text = "" if redundancy_beta is None else f"{float(redundancy_beta):.12g}"
                 parameter_output = ""
-                if algorithm in {"my_v0", "my_v1", "my_v2"}:
+                if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
                     parameter_output += f"pdmf_neighbors={pdmf_neighbors_text} "
-                if algorithm in {"my_v1", "my_v2"}:
+                if algorithm in {"my_v1", "my_v2", "my_v3"}:
                     parameter_output += (
                         f"graph_neighbors={graph_neighbors_text} "
                         f"lambda={similarity_lambda_text} "
@@ -849,6 +961,11 @@ def _run_algorithm_grid(
                         graph_neighbors_text,
                         similarity_lambda_text,
                     )
+                elif algorithm == "my_v3":
+                    parameter_output += f"beta={redundancy_beta_text} "
+                    global_cache_key = (str(p1), pdmf_neighbors_text, graph_neighbors_text, similarity_lambda_text, redundancy_beta_text)
+                    root_cache_key = global_cache_key
+                    curve_cache_key = ()
                 else:
                     global_cache_key = (str(p1), pdmf_neighbors_text)
                     root_cache_key = (
@@ -866,7 +983,7 @@ def _run_algorithm_grid(
                 )
                 root_feature_ranking_cache = (
                     root_feature_ranking_caches.setdefault(root_cache_key, {})
-                    if algorithm in {"my_v1", "my_v2"}
+                    if algorithm in {"my_v1", "my_v2", "my_v3"}
                     else None
                 )
                 local_feature_selection_cache = (
@@ -875,8 +992,8 @@ def _run_algorithm_grid(
                     else None
                 )
                 for theta in theta_values:
-                    key = (
-                        (
+                    if algorithm == "my_v2":
+                        key = (
                             seed,
                             stability_delta_text,
                             pdmf_neighbors_text,
@@ -884,8 +1001,19 @@ def _run_algorithm_grid(
                             similarity_lambda_text,
                             f"{theta:.2f}",
                         )
-                        if algorithm == "my_v2"
-                        else (
+                    elif algorithm == "my_v3":
+                        key = (
+                            seed,
+                            str(p1),
+                            str(p2),
+                            pdmf_neighbors_text,
+                            graph_neighbors_text,
+                            similarity_lambda_text,
+                            f"{theta:.2f}",
+                            redundancy_beta_text,
+                        )
+                    else:
+                        key = (
                             seed,
                             str(p1),
                             str(p2),
@@ -894,7 +1022,6 @@ def _run_algorithm_grid(
                             similarity_lambda_text,
                             f"{theta:.2f}",
                         )
-                    )
                     if key in completed:
                         continue
                     row: dict[str, object] = {field: "" for field in run_fields}
@@ -911,6 +1038,13 @@ def _run_algorithm_grid(
                     )
                     if algorithm == "my_v2":
                         row["stability_delta"] = stability_delta_text
+                    if algorithm == "my_v3":
+                        row.update(
+                            redundancy_beta=redundancy_beta_text,
+                            fusion_alpha_mode=algorithm_config["fusion_alpha_mode"],
+                            mutual_knn=algorithm_config["mutual_knn"],
+                            self_tuning_graph=algorithm_config["self_tuning_graph"],
+                        )
                     random.seed(seed)
                     np.random.seed(seed)
                     start = time.perf_counter()
@@ -927,6 +1061,7 @@ def _run_algorithm_grid(
                             graph_neighbors=graph_neighbors,
                             pdmf_similarity_lambda=similarity_lambda,
                             stability_delta=stability_delta,
+                            redundancy_beta=redundancy_beta,
                             precomputed_pseudo_labels=pseudo_labels_by_seed.get(seed),
                             precomputed_global_selection=global_selection_cache.get(
                                 global_cache_key
@@ -943,7 +1078,7 @@ def _run_algorithm_grid(
                         if seed not in pseudo_labels_by_seed:
                             pseudo_labels_by_seed[seed] = model.pseudo_labels_.copy()
                         if global_cache_key not in global_selection_cache:
-                            if algorithm in {"my_v0", "my_v1"}:
+                            if algorithm in {"my_v0", "my_v1", "my_v3"}:
                                 global_selection_cache[global_cache_key] = (
                                     model.selected_feature_indices_.copy(),
                                     model.attribute_scores_.copy(),
@@ -959,17 +1094,6 @@ def _run_algorithm_grid(
                             local_counts = np.asarray(
                                 model.local_feature_counts_, dtype=float
                             )
-                            row.update(
-                                selected_p1=model.p1_,
-                                global_entropy_loss=model.global_entropy_loss_,
-                                global_graph_loss=model.global_graph_loss_,
-                            )
-                            if local_counts.size:
-                                row.update(
-                                    local_feature_count_mean=float(local_counts.mean()),
-                                    local_feature_count_min=int(local_counts.min()),
-                                    local_feature_count_max=int(local_counts.max()),
-                                )
                         runtime = time.perf_counter() - start
                         metrics = evaluate_clustering(
                             dataset.y,
@@ -998,6 +1122,12 @@ def _run_algorithm_grid(
                             prediction_name = (
                                 f"seed_{seed}_delta_{delta_suffix}{pdmf_suffix}"
                                 f"{graph_suffix}{lambda_suffix}_theta_{theta:.2f}.npy"
+                            )
+                        elif algorithm == "my_v3":
+                            prediction_name = (
+                                f"seed_{seed}_p1_{p1}_p2_{p2}{pdmf_suffix}"
+                                f"{graph_suffix}{lambda_suffix}_beta_{redundancy_beta_text.replace('.', 'p')}"
+                                f"_theta_{theta:.2f}.npy"
                             )
                         else:
                             prediction_name = (
@@ -1063,7 +1193,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1110,6 +1240,17 @@ def main() -> int:
                     graph_neighbors=best["graph_neighbors"],
                     pdmf_similarity_lambda=best["pdmf_similarity_lambda"],
                 )
+            if algorithm == "my_v3":
+                best_params.update(
+                    pdmf_neighbors=best["pdmf_neighbors"],
+                    pdmf_epsilon=algorithm_config["pdmf_epsilon"],
+                    graph_neighbors=best["graph_neighbors"],
+                    pdmf_similarity_lambda=best["pdmf_similarity_lambda"],
+                    redundancy_beta=float(best["redundancy_beta"]),
+                    fusion_alpha_mode=algorithm_config["fusion_alpha_mode"],
+                    mutual_knn=algorithm_config["mutual_knn"],
+                    self_tuning_graph=algorithm_config["self_tuning_graph"],
+                )
             best_rows.append(
                 _benchmark_summary_row(
                     algorithm,
@@ -1132,3 +1273,5 @@ if __name__ == "__main__":
 # ..\python\.venv\Scripts\python.exe .\run.py
 # ..\python\.venv\Scripts\python.exe .\run.py *> run.log
 # Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > run-0802-2105.log 2>&1" -WindowStyle Hidden
+
+# python3 run.py > only_plgb_fsc_with_COIL20.log 2>&1 &
