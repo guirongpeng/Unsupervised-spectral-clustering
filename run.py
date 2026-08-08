@@ -18,6 +18,7 @@ from algorithms.my_v0 import MYV0, MYV0Config
 from algorithms.my_v1 import MYV1, MYV1Config
 from algorithms.my_v2 import MYV2, MYV2Config
 from algorithms.my_v3 import MYV3, MYV3Config
+from algorithms.my_v4 import MYV4, MYV4Config
 from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig
 from config import (
     DATASETS,
@@ -26,6 +27,7 @@ from config import (
     MY_V1_PARAMS,
     MY_V2_PARAMS,
     MY_V3_PARAMS,
+    MY_V4_PARAMS,
     PLGB_FSC_PARAMS,
     ExperimentConfig,
 )
@@ -92,6 +94,8 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
         return MY_V2_PARAMS
     if algorithm == "my_v3":
         return MY_V3_PARAMS
+    if algorithm == "my_v4":
+        return MY_V4_PARAMS
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
@@ -100,7 +104,7 @@ def _validate_algorithm_config(algorithm: str) -> None:
     theta_values = tuple(params["theta_values"])
     if algorithm != "my_v2":
         _validate_count_ratio_options(algorithm, params, "p1", minimum_count=2)
-        if algorithm in {"my_v0", "my_v1", "my_v3"}:
+        if algorithm in {"my_v0", "my_v1", "my_v3", "my_v4"}:
             _validate_count_ratio_options(
                 algorithm,
                 params,
@@ -114,15 +118,15 @@ def _validate_algorithm_config(algorithm: str) -> None:
                 raise ValueError(f"{algorithm}: p2_values must contain positive integers")
     if not theta_values or any(not 0.0 < theta <= 1.0 for theta in theta_values):
         raise ValueError(f"{algorithm}: theta_values must be in (0, 1]")
-    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
+    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}:
         _validate_count_ratio_options(
             algorithm, params, "pdmf_neighbors", minimum_count=1
         )
-    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
+    if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}:
         epsilon = float(params["pdmf_epsilon"])
         if not math.isfinite(epsilon) or epsilon <= 0:
             raise ValueError(f"{algorithm}: pdmf_epsilon must be positive")
-    if algorithm in {"my_v1", "my_v2", "my_v3"}:
+    if algorithm in {"my_v1", "my_v2", "my_v3", "my_v4"}:
         _validate_count_ratio_options(
             algorithm, params, "graph_neighbors", minimum_count=1
         )
@@ -206,7 +210,7 @@ def _resolve_p1_values(algorithm: str, n_features: int) -> tuple[int, ...]:
 
 def _resolve_p2_values(algorithm: str, p1: int) -> tuple[int, ...]:
     params = _get_algorithm_config(algorithm)
-    if algorithm in {"my_v0", "my_v1", "my_v3"}:
+    if algorithm in {"my_v0", "my_v1", "my_v3", "my_v4"}:
         candidates = [int(value) for value in params["p2_counts"]]
         candidates.extend(
             math.ceil(float(ratio) * p1) for ratio in params["p2_ratios"]
@@ -219,7 +223,7 @@ def _resolve_p2_values(algorithm: str, p1: int) -> tuple[int, ...]:
 def _resolve_pdmf_neighbor_settings(
     algorithm: str,
 ) -> tuple[int | float | None, ...]:
-    if algorithm not in {"my_v0", "my_v1", "my_v2", "my_v3"}:
+    if algorithm not in {"my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}:
         return (None,)
     return _resolve_neighbor_settings(algorithm, "pdmf_neighbors")
 
@@ -247,7 +251,7 @@ def _resolve_neighbor_settings(
 def _resolve_graph_neighbor_settings(
     algorithm: str,
 ) -> tuple[int | float | None, ...]:
-    if algorithm not in {"my_v1", "my_v2", "my_v3"}:
+    if algorithm not in {"my_v1", "my_v2", "my_v3", "my_v4"}:
         return (None,)
     return _resolve_neighbor_settings(algorithm, "graph_neighbors")
 
@@ -255,7 +259,7 @@ def _resolve_graph_neighbor_settings(
 def _resolve_similarity_lambda_settings(
     algorithm: str,
 ) -> tuple[float | None, ...]:
-    if algorithm not in {"my_v1", "my_v2", "my_v3"}:
+    if algorithm not in {"my_v1", "my_v2", "my_v3", "my_v4"}:
         return (None,)
     return tuple(
         dict.fromkeys(
@@ -591,7 +595,7 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4:
     algorithm_config = _get_algorithm_config(algorithm)
     if algorithm != "my_v2" and (p1 is None or p2 is None):
         raise ValueError(f"{algorithm}: p1 and p2 are required")
@@ -699,6 +703,29 @@ def _create_model(
             precomputed_global_selection=precomputed_global_selection,
             root_feature_ranking_cache=root_feature_ranking_cache,
         )
+    if algorithm == "my_v4":
+        if pdmf_neighbors is None:
+            pdmf_neighbors = _resolve_pdmf_neighbor_settings(algorithm)[0]
+        if graph_neighbors is None:
+            graph_neighbors = _resolve_graph_neighbor_settings(algorithm)[0]
+        if pdmf_similarity_lambda is None:
+            pdmf_similarity_lambda = _resolve_similarity_lambda_settings(algorithm)[0]
+        return MYV4(
+            MYV4Config(
+                p1=p1,
+                p2=p2,
+                purity=theta,
+                pdmf_neighbors=pdmf_neighbors,
+                pdmf_epsilon=float(algorithm_config["pdmf_epsilon"]),
+                graph_neighbors=graph_neighbors,
+                pdmf_similarity_lambda=pdmf_similarity_lambda,
+            ),
+            n_clusters=n_clusters,
+            random_state=seed,
+            precomputed_pseudo_labels=precomputed_pseudo_labels,
+            precomputed_global_selection=precomputed_global_selection,
+            root_feature_ranking_cache=root_feature_ranking_cache,
+        )
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
@@ -772,6 +799,22 @@ def _algorithm_parameters(
             "fusion_alpha_mode": algorithm_config["fusion_alpha_mode"],
             "mutual_knn": algorithm_config["mutual_knn"],
             "self_tuning_graph": algorithm_config["self_tuning_graph"],
+        }
+    if algorithm == "my_v4":
+        return {
+            "global_selection": "Gaussian-PDMF plus confidence-weighted pseudo-label mutual information",
+            "local_selection": "entropy-graph importance plus confidence-weighted pseudo-label consistency",
+            "p2_counts": algorithm_config["p2_counts"],
+            "p2_ratios": algorithm_config["p2_ratios"],
+            "pdmf_neighbors_counts": algorithm_config["pdmf_neighbors_counts"],
+            "pdmf_neighbors_ratios": algorithm_config["pdmf_neighbors_ratios"],
+            "pdmf_epsilon": algorithm_config["pdmf_epsilon"],
+            "graph_neighbors_counts": algorithm_config["graph_neighbors_counts"],
+            "graph_neighbors_ratios": algorithm_config["graph_neighbors_ratios"],
+            "pdmf_similarity_lambda_ratios": algorithm_config[
+                "pdmf_similarity_lambda_ratios"
+            ],
+            "confidence_weighting": "automatic from nearest-vs-second-nearest distance margin",
         }
     raise ValueError(f"Unsupported algorithm: {algorithm}")
 
@@ -940,9 +983,9 @@ def _run_algorithm_grid(
                 stability_delta_text = _format_stability_delta(stability_delta)
                 redundancy_beta_text = "" if redundancy_beta is None else f"{float(redundancy_beta):.12g}"
                 parameter_output = ""
-                if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3"}:
+                if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}:
                     parameter_output += f"pdmf_neighbors={pdmf_neighbors_text} "
-                if algorithm in {"my_v1", "my_v2", "my_v3"}:
+                if algorithm in {"my_v1", "my_v2", "my_v3", "my_v4"}:
                     parameter_output += (
                         f"graph_neighbors={graph_neighbors_text} "
                         f"lambda={similarity_lambda_text} "
@@ -966,6 +1009,17 @@ def _run_algorithm_grid(
                     global_cache_key = (str(p1), pdmf_neighbors_text, graph_neighbors_text, similarity_lambda_text, redundancy_beta_text)
                     root_cache_key = global_cache_key
                     curve_cache_key = ()
+                elif algorithm == "my_v4":
+                    # V4 全局评分依赖伪标签，缓存必须按 seed 隔离。
+                    global_cache_key = (
+                        str(seed),
+                        str(p1),
+                        pdmf_neighbors_text,
+                        graph_neighbors_text,
+                        similarity_lambda_text,
+                    )
+                    root_cache_key = global_cache_key
+                    curve_cache_key = ()
                 else:
                     global_cache_key = (str(p1), pdmf_neighbors_text)
                     root_cache_key = (
@@ -983,7 +1037,7 @@ def _run_algorithm_grid(
                 )
                 root_feature_ranking_cache = (
                     root_feature_ranking_caches.setdefault(root_cache_key, {})
-                    if algorithm in {"my_v1", "my_v2", "my_v3"}
+                    if algorithm in {"my_v1", "my_v2", "my_v3", "my_v4"}
                     else None
                 )
                 local_feature_selection_cache = (
@@ -1078,7 +1132,7 @@ def _run_algorithm_grid(
                         if seed not in pseudo_labels_by_seed:
                             pseudo_labels_by_seed[seed] = model.pseudo_labels_.copy()
                         if global_cache_key not in global_selection_cache:
-                            if algorithm in {"my_v0", "my_v1", "my_v3"}:
+                            if algorithm in {"my_v0", "my_v1", "my_v3", "my_v4"}:
                                 global_selection_cache[global_cache_key] = (
                                     model.selected_feature_indices_.copy(),
                                     model.attribute_scores_.copy(),
@@ -1193,7 +1247,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1250,6 +1304,14 @@ def main() -> int:
                     fusion_alpha_mode=algorithm_config["fusion_alpha_mode"],
                     mutual_knn=algorithm_config["mutual_knn"],
                     self_tuning_graph=algorithm_config["self_tuning_graph"],
+                )
+            if algorithm == "my_v4":
+                best_params.update(
+                    pdmf_neighbors=best["pdmf_neighbors"],
+                    pdmf_epsilon=algorithm_config["pdmf_epsilon"],
+                    graph_neighbors=best["graph_neighbors"],
+                    pdmf_similarity_lambda=best["pdmf_similarity_lambda"],
+                    confidence_weighting="automatic",
                 )
             best_rows.append(
                 _benchmark_summary_row(

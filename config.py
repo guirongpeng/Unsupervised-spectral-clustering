@@ -116,6 +116,25 @@ MY_V3_PARAMS = {
     "pdmf_epsilon": 1e-8,
 }
 
+MY_V4_PARAMS = {
+    # 组件2：全局属性数量；伪标签互信息权重由置信度自动确定。
+    "p1_counts": (),
+    "p1_ratios": (0.25, 0.50, 0.75),
+    # 组件3：每个粒球的局部属性数量。
+    "p2_counts": (),
+    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
+    # 伪纯度停止阈值。
+    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
+    "pdmf_neighbors_counts": (5, 10),
+    "pdmf_neighbors_ratios": (),
+    "graph_neighbors_counts": (3, 5, 10),
+    "graph_neighbors_ratios": (),
+    # PDMF 边相似度中的原始相似度权重。
+    "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
+    # V4 不设置 alpha/beta/gamma；伪标签置信度自动生成融合权重。
+    "pdmf_epsilon": 1e-8,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -124,7 +143,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
