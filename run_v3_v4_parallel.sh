@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 VENV_DIR=".venv"
 BOOTSTRAP_PYTHON="${BOOTSTRAP_PYTHON:-python3}"
-WORKERS="${WORKERS:-9}"
+WORKERS="${WORKERS:-4}"
 PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 # Python 并行脚本按该目录区分每一组批量实验。
