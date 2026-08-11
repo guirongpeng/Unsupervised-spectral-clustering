@@ -140,11 +140,13 @@ GB_POJG_GBDPC_PARAMS = {
     # 原论文网格：{0,0.05,...,1,2,...,10}，共 30 个候选值。
     "gamma_values": (
         *tuple(round(i * 0.05, 2) for i in range(21)),
-        *tuple(range(2, 11)),
+        # *tuple(range(2, 11)), 原文建议[0,1]，故去掉该范围值
     ),
     # 初始粒球分裂阈值 max(delta*sqrt(n), n**(1/4)) 中的 delta，范围 (0,1]。
     # 原论文网格：{0.1,0.2,...,1.0}，共 10 个候选值。
-    "delta_values": tuple(round(i / 10, 1) for i in range(1, 11)),
+    "delta_values": tuple(round(i / 10, 1) for i in range(4, 11)),
+    # "delta_values": tuple(round(i / 10, 1) for i in range(1, 11)),  # 原文建议[0.4,1.0]，故去掉该范围值
+
 }
 
 @dataclass(frozen=True)
