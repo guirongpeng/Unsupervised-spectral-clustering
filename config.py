@@ -135,6 +135,18 @@ MY_V4_PARAMS = {
     "pdmf_epsilon": 1e-8,
 }
 
+GB_POJG_GBDPC_PARAMS = {
+    # GB-POJG 合理粒度质量 BQ(G)=NumInBall*exp(-gamma*AveRadius) 中的 gamma，范围 [0,+inf)。
+    # 原论文网格：{0,0.05,...,1,2,...,10}，共 30 个候选值。
+    "gamma_values": (
+        *tuple(round(i * 0.05, 2) for i in range(21)),
+        *tuple(range(2, 11)),
+    ),
+    # 初始粒球分裂阈值 max(delta*sqrt(n), n**(1/4)) 中的 delta，范围 (0,1]。
+    # 原论文网格：{0.1,0.2,...,1.0}，共 10 个候选值。
+    "delta_values": tuple(round(i / 10, 1) for i in range(1, 11)),
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -143,7 +155,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子

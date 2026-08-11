@@ -4,3 +4,4 @@ results/
 v2_all_results/
 *.log
 run_v2_fixed_best_100seeds.py
+run_v3_v4_small_parallel.py
