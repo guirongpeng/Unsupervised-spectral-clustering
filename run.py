@@ -21,6 +21,7 @@ from algorithms.my_v3 import MYV3, MYV3Config
 from algorithms.my_v4 import MYV4, MYV4Config
 from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig
 from algorithms.gb_pojg_gbdpc import GBPOJGGBDPC, GBPOJGGBDPCConfig
+from algorithms.gb_pojg_gbsc import GBPOJGGBSC, GBPOJGGBSCConfig
 from algorithms.gbsc import GBSC, GBSCConfig
 from algorithms.sagbc import SAGBC, SAGBCConfig
 from algorithms.gbct import GBCT, GBCTConfig
@@ -28,6 +29,7 @@ from config import (
     DATASETS,
     EXPERIMENT,
     GB_POJG_GBDPC_PARAMS,
+    GB_POJG_GBSC_PARAMS,
     GBSC_PARAMS,
     SAGBC_PARAMS,
     GBCT_PARAMS,
@@ -106,6 +108,10 @@ GBSC_RUN_FIELDS = (
     "algorithm", "dataset", "seed", "sigma", "status", *METRICS,
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
+GB_POJG_GBSC_RUN_FIELDS = (
+    "algorithm", "dataset", "seed", "gamma", "delta", "sigma", "status", *METRICS,
+    "runtime_seconds", "prediction_path", "error_type", "error_message",
+)
 SAGBC_RUN_FIELDS = (
     "algorithm", "dataset", "seed", "sample_size", "status", *METRICS,
     "runtime_seconds", "prediction_path", "error_type", "error_message",
@@ -122,6 +128,8 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
         return GBSC_PARAMS
     if algorithm == "gb_pojg_gbdpc":
         return GB_POJG_GBDPC_PARAMS
+    if algorithm == "gb_pojg_gbsc":
+        return GB_POJG_GBSC_PARAMS
     if algorithm == "plgb_fsc":
         return PLGB_FSC_PARAMS
     if algorithm == "my_v0":
@@ -154,6 +162,15 @@ def _validate_algorithm_config(algorithm: str) -> None:
             raise ValueError("gb_pojg_gbdpc: gamma_values must be finite values in [0, +inf)")
         if not deltas or any(not math.isfinite(value) or not 0 < value <= 1 for value in deltas):
             raise ValueError("gb_pojg_gbdpc: delta_values must be finite values in (0, 1]")
+        return
+    if algorithm == "gb_pojg_gbsc":
+        for name, lower, strict in (("gamma_values", 0.0, False), ("delta_values", 0.0, True), ("sigma_values", 0.0, True)):
+            values = tuple(float(value) for value in params[name])
+            if not values or any(not math.isfinite(value) or (value <= lower if strict else value < lower) for value in values):
+                relation = "> 0" if strict else ">= 0"
+                raise ValueError(f"gb_pojg_gbsc: {name} must contain finite values {relation}")
+        if any(float(value) > 1.0 for value in params["delta_values"]):
+            raise ValueError("gb_pojg_gbsc: delta_values must be in (0, 1]")
         return
     if algorithm == "gbsc":
         sigmas = tuple(float(value) for value in params["sigma_values"])
@@ -658,7 +675,7 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBSC | SAGBC | GBCT:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT:
     algorithm_config = _get_algorithm_config(algorithm)
     if algorithm == "gbct":
         return GBCT(GBCTConfig(n_clusters=n_clusters, noise_density_ratio=float(algorithm_config["noise_density_ratio"])))
@@ -678,6 +695,14 @@ def _create_model(
             raise ValueError("gb_pojg_gbdpc: gamma and delta are required")
         return GBPOJGGBDPC(
             GBPOJGGBDPCConfig(gamma=float(gamma), delta=float(delta)),
+            n_clusters=n_clusters,
+            random_state=seed,
+        )
+    if algorithm == "gb_pojg_gbsc":
+        if gamma is None or delta is None or sigma is None:
+            raise ValueError("gb_pojg_gbsc: gamma, delta and sigma are required")
+        return GBPOJGGBSC(
+            GBPOJGGBSCConfig(gamma=float(gamma), delta=float(delta), sigma=float(sigma)),
             n_clusters=n_clusters,
             random_state=seed,
         )
@@ -842,6 +867,14 @@ def _algorithm_parameters(
             "clustering": "official GBDPC density * delta decision value",
             "gamma_values": algorithm_config["gamma_values"],
             "delta_values": algorithm_config["delta_values"],
+        }
+    if algorithm == "gb_pojg_gbsc":
+        return {
+            "granular_ball_generation": "official GB-POJG binary-tree pruning and source-style anomaly split",
+            "spectral_clustering": "official GBSC boundary-distance Gaussian affinity and normalized Laplacian",
+            "gamma_values": algorithm_config["gamma_values"],
+            "delta_values": algorithm_config["delta_values"],
+            "sigma_values": algorithm_config["sigma_values"],
         }
     if algorithm == "plgb_fsc":
         return {
@@ -1105,6 +1138,87 @@ def _run_gb_pojg_gbdpc_grid(
     return _summarize_gb_pojg_gbdpc(output_dir, config, combinations)
 
 
+def _summarize_gb_pojg_gbsc(
+    output_dir: Path,
+    config: ExperimentConfig,
+    parameter_combinations: tuple[tuple[float, float, float], ...],
+) -> dict[str, object]:
+    rows = _read_csv(output_dir / "all_runs.csv")
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success":
+            grouped[(row["gamma"], row["delta"], row["sigma"])].append(row)
+    fields = (
+        "dataset", "gamma", "delta", "sigma", "success_runs",
+        *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")),
+        "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum",
+    )
+    dataset_name = rows[0]["dataset"] if rows else ""
+    summaries: list[dict[str, object]] = []
+    for gamma, delta, sigma in parameter_combinations:
+        key = (f"{gamma:.12g}", f"{delta:.12g}", f"{sigma:.12g}")
+        success = grouped.get(key, [])
+        item: dict[str, object] = {"dataset": dataset_name, "gamma": key[0], "delta": key[1], "sigma": key[2], "success_runs": len(success)}
+        for metric in METRICS:
+            item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+        runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan"))
+        item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
+        summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields)
+    candidates = [row for row in summaries if int(row["success_runs"]) == len(config.seeds) and math.isfinite(float(row["acc_mean"]))]
+    if not candidates:
+        raise RuntimeError("No GB-POJG-GBSC parameter combination completed every seed")
+    best = min(candidates, key=lambda row: (-float(row["acc_mean"]), -float(row["nmi_mean"]), -float(row["f_measure_mean"]), float(row["runtime_seconds_mean"]), str(row["gamma"]), str(row["delta"]), str(row["sigma"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}
+    _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset_name, "algorithm": "gb_pojg_gbsc", "planned_runs": len(config.seeds) * len(parameter_combinations), "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
+def _run_gb_pojg_gbsc_grid(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("gb_pojg_gbsc")
+    combinations = tuple((float(gamma), float(delta), float(sigma)) for gamma in dict.fromkeys(params["gamma_values"]) for delta in dict.fromkeys(params["delta_values"]) for sigma in dict.fromkeys(params["sigma_values"]))
+    output_dir = config.output_root / run_id / dataset.name / "gb_pojg_gbsc"
+    if output_dir.exists() and not config.resume:
+        raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume)
+    labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"
+    previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {(int(row["seed"]), row["gamma"], row["delta"], row["sigma"]) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "gb_pojg_gbsc", "dataset": dataset.name, "seeds": config.seeds, "gamma_values": params["gamma_values"], "delta_values": params["delta_values"], "sigma_values": params["sigma_values"], "preprocessing": "global_featurewise_minmax_to_0_1", "selection_rule": "maximize mean ACC across seeds", "algorithm_parameters": _algorithm_parameters("gb_pojg_gbsc", config)})
+    X = minmax_scale(dataset.X)
+    mode = "a" if previous else "w"; planned = len(config.seeds) * len(combinations)
+    with all_runs_path.open(mode, encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=GB_POJG_GBSC_RUN_FIELDS)
+        if mode == "w": writer.writeheader()
+        done = len(completed)
+        for seed in config.seeds:
+            for gamma, delta, sigma in combinations:
+                gamma_text, delta_text, sigma_text = f"{gamma:.12g}", f"{delta:.12g}", f"{sigma:.12g}"
+                if (seed, gamma_text, delta_text, sigma_text) in completed: continue
+                row: dict[str, object] = {field: "" for field in GB_POJG_GBSC_RUN_FIELDS}
+                row.update(algorithm="gb_pojg_gbsc", dataset=dataset.name, seed=seed, gamma=gamma_text, delta=delta_text, sigma=sigma_text)
+                start = time.perf_counter()
+                try:
+                    labels = _create_model("gb_pojg_gbsc", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, gamma=gamma, delta=delta, sigma=sigma).fit_predict(X.copy())
+                    runtime = time.perf_counter() - start
+                    metrics = evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict()
+                    prediction = labels_dir / f"seed_{seed}_gamma_{gamma_text.replace('.', 'p')}_delta_{delta_text.replace('.', 'p')}_sigma_{sigma_text.replace('.', 'p')}.npy"
+                    np.save(prediction, labels)
+                    row.update(status="success", runtime_seconds=runtime, prediction_path=prediction.relative_to(output_dir).as_posix(), **metrics)
+                except Exception as exc:
+                    row.update(status="failed", runtime_seconds=time.perf_counter() - start, error_type=type(exc).__name__, error_message=str(exc))
+                    (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                writer.writerow(row); stream.flush(); done += 1
+                metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{done}/{planned}] gb_pojg_gbsc {dataset.name} seed={seed} gamma={gamma_text} delta={delta_text} sigma={sigma_text} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    return _summarize_gb_pojg_gbsc(output_dir, config, combinations)
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1319,6 +1433,8 @@ def _run_algorithm_grid(
         return _run_gbsc_grid(dataset, config, run_id)
     if algorithm == "gb_pojg_gbdpc":
         return _run_gb_pojg_gbdpc_grid(dataset, config, run_id)
+    if algorithm == "gb_pojg_gbsc":
+        return _run_gb_pojg_gbsc_grid(dataset, config, run_id)
     algorithm_config = _get_algorithm_config(algorithm)
     theta_values = tuple(algorithm_config["theta_values"])
     if algorithm == "my_v2":
@@ -1741,7 +1857,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc", "gbct"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1764,6 +1880,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {"gamma": float(best["gamma"]), "delta": float(best["delta"]), "sigma": float(best["sigma"])}
+                if algorithm == "gb_pojg_gbsc"
                 else {"sigma": float(best["sigma"])}
                 if algorithm == "gbsc"
                 else {"sample_size": int(best["sample_size"])}
@@ -1772,7 +1890,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gbsc", "sagbc", "gbct"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

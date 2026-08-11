@@ -149,6 +149,18 @@ GB_POJG_GBDPC_PARAMS = {
 
 }
 
+GB_POJG_GBSC_PARAMS = {
+    # GB-POJG 粒球质量 BQ(G)=NumInBall*exp(-gamma*AveRadius) 中的 gamma；官方 main.m 固定为 2。
+    "gamma_values": (*tuple(round(i * 0.05, 2) for i in range(21)),),
+    # 初始粒球分裂阈值 max(delta*sqrt(n), n**(1/4)) 中的 delta；官方 main.m 固定为 1。
+    "delta_values": tuple(round(i / 10, 1) for i in range(4, 11)),
+    # 粒球边界距离高斯相似度 exp(-d_boundary^2/(2*sigma^2)) 的带宽；官方 main.m 固定为 1。
+    "sigma_values": (
+        *tuple(range(1, 11)),
+        *tuple(range(20, 201, 10)),
+    ),
+}
+
 GBSC_PARAMS = {
     # 粒球边界距离高斯相似度 exp(-d_boundary^2/(2*sigma^2)) 的带宽。
     # 官方 UCI 可执行源码固定使用 sigma=1.0；论文 UCI 表中记为 0.1。
@@ -173,7 +185,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
