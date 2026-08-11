@@ -155,6 +155,11 @@ GBSC_PARAMS = {
     "sigma_values": (1.0,),
 }
 
+SAGBC_PARAMS = {
+    # 官方源码 CC 实验固定抽取 5000 个代表样本；小数据集使用全部样本 min(5000, n)。
+    "sample_size": 5000,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -163,7 +168,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子

@@ -22,11 +22,13 @@ from algorithms.my_v4 import MYV4, MYV4Config
 from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig
 from algorithms.gb_pojg_gbdpc import GBPOJGGBDPC, GBPOJGGBDPCConfig
 from algorithms.gbsc import GBSC, GBSCConfig
+from algorithms.sagbc import SAGBC, SAGBCConfig
 from config import (
     DATASETS,
     EXPERIMENT,
     GB_POJG_GBDPC_PARAMS,
     GBSC_PARAMS,
+    SAGBC_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -102,9 +104,15 @@ GBSC_RUN_FIELDS = (
     "algorithm", "dataset", "seed", "sigma", "status", *METRICS,
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
+SAGBC_RUN_FIELDS = (
+    "algorithm", "dataset", "seed", "sample_size", "status", *METRICS,
+    "runtime_seconds", "prediction_path", "error_type", "error_message",
+)
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "sagbc":
+        return SAGBC_PARAMS
     if algorithm == "gbsc":
         return GBSC_PARAMS
     if algorithm == "gb_pojg_gbdpc":
@@ -126,6 +134,11 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "sagbc":
+        sample_size = params["sample_size"]
+        if isinstance(sample_size, bool) or not isinstance(sample_size, int) or sample_size < 2:
+            raise ValueError("sagbc: sample_size must be an integer >= 2")
+        return
     if algorithm == "gb_pojg_gbdpc":
         gammas = tuple(float(value) for value in params["gamma_values"])
         deltas = tuple(float(value) for value in params["delta_values"])
@@ -631,13 +644,21 @@ def _create_model(
     gamma: float | None = None,
     delta: float | None = None,
     sigma: float | None = None,
+    sagbc_sample_size: int | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBSC:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBSC | SAGBC:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "sagbc":
+        if sagbc_sample_size is None:
+            raise ValueError("sagbc: resolved sample_size is required")
+        return SAGBC(SAGBCConfig(
+            sample_size=sagbc_sample_size,
+            random_state=seed,
+        ))
     if algorithm == "gbsc":
         if sigma is None:
             raise ValueError("gbsc: sigma is required")
@@ -787,6 +808,16 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "sagbc":
+        return {
+            "anchor_sampling": "official random representative-point sampling; min(config.sample_size, n_samples)",
+            "granular_ball_generation": "official farthest-pair division until ball size <= 8",
+            "structure_graph": "official 5-nearest-anchor Gaussian affiliation and 2r shared-neighbor connection",
+            "sample_size": algorithm_config["sample_size"],
+            "neighbor_count": 5,
+            "max_ball_size": 8,
+            "search_radius_scale": 2.0,
+        }
     if algorithm == "gbsc":
         return {
             "granular_ball_generation": "official weighted-density division plus fixed-radius normalization",
@@ -1171,12 +1202,86 @@ def _run_gbsc_grid(dataset: Dataset, config: ExperimentConfig, run_id: str) -> d
     return _summarize_gbsc(output_dir, config, sigma_values)
 
 
+def _summarize_sagbc(output_dir: Path, config: ExperimentConfig, sample_size: int) -> dict[str, object]:
+    rows = _read_csv(output_dir / "all_runs.csv")
+    success = [row for row in rows if row["status"] == "success"]
+    fields = (
+        "dataset", "sample_size", "success_runs",
+        *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")),
+        "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum",
+    )
+    best: dict[str, object] = {
+        "dataset": rows[0]["dataset"] if rows else "", "sample_size": sample_size,
+        "success_runs": len(success),
+    }
+    for metric in METRICS:
+        best[f"{metric}_mean"], best[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+    runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan"))
+    best.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
+    _write_csv(output_dir / "grid_summary.csv", [best], fields)
+    best = {**best, "selection_metric": "not_applicable_single_source_configuration", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in success)}
+    _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {
+        "dataset": best["dataset"], "algorithm": "sagbc", "planned_runs": len(config.seeds),
+        "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best,
+    })
+    return best
+
+
+def _run_sagbc(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    requested = int(_get_algorithm_config("sagbc")["sample_size"])
+    sample_size = min(requested, dataset.n_samples)
+    output_dir = config.output_root / run_id / dataset.name / "sagbc"
+    if output_dir.exists() and not config.resume:
+        raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume)
+    labels_dir, all_runs_path = output_dir / "labels", output_dir / "all_runs.csv"
+    labels_dir.mkdir(exist_ok=True)
+    previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {int(row["seed"]) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {
+        "algorithm": "sagbc", "dataset": dataset.name, "seeds": config.seeds,
+        "sample_size_requested": requested, "sample_size_used": sample_size,
+        "preprocessing": "none_official_source", "selection_rule": "not_applicable_single_source_configuration",
+        "algorithm_parameters": _algorithm_parameters("sagbc", config),
+    })
+    with all_runs_path.open("a" if previous else "w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=SAGBC_RUN_FIELDS)
+        if not previous:
+            writer.writeheader()
+        for done, seed in enumerate(config.seeds, start=1):
+            if seed in completed:
+                continue
+            row: dict[str, object] = {field: "" for field in SAGBC_RUN_FIELDS}
+            row.update(algorithm="sagbc", dataset=dataset.name, seed=seed, sample_size=sample_size)
+            start = time.perf_counter()
+            try:
+                labels = _create_model("sagbc", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, sagbc_sample_size=sample_size).fit_predict(dataset.X.copy())
+                runtime = time.perf_counter() - start
+                prediction = labels_dir / f"seed_{seed}.npy"
+                np.save(prediction, labels)
+                row.update(status="success", runtime_seconds=runtime, prediction_path=prediction.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+            except Exception as exc:
+                row.update(status="failed", runtime_seconds=time.perf_counter() - start, error_type=type(exc).__name__, error_message=str(exc))
+                (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            writer.writerow(row)
+            stream.flush()
+            metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{done}/{len(config.seeds)}] sagbc {dataset.name} seed={seed} sample_size={sample_size} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    return _summarize_sagbc(output_dir, config, sample_size)
+
+
 def _run_algorithm_grid(
     dataset: Dataset,
     config: ExperimentConfig,
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "sagbc":
+        return _run_sagbc(dataset, config, run_id)
     if algorithm == "gbsc":
         return _run_gbsc_grid(dataset, config, run_id)
     if algorithm == "gb_pojg_gbdpc":
@@ -1603,7 +1708,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1628,9 +1733,11 @@ def main() -> int:
                 if algorithm == "gb_pojg_gbdpc"
                 else {"sigma": float(best["sigma"])}
                 if algorithm == "gbsc"
+                else {"sample_size": int(best["sample_size"])}
+                if algorithm == "sagbc"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gbsc"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gbsc", "sagbc"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),
