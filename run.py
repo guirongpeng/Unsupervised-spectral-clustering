@@ -23,12 +23,14 @@ from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig
 from algorithms.gb_pojg_gbdpc import GBPOJGGBDPC, GBPOJGGBDPCConfig
 from algorithms.gbsc import GBSC, GBSCConfig
 from algorithms.sagbc import SAGBC, SAGBCConfig
+from algorithms.gbct import GBCT, GBCTConfig
 from config import (
     DATASETS,
     EXPERIMENT,
     GB_POJG_GBDPC_PARAMS,
     GBSC_PARAMS,
     SAGBC_PARAMS,
+    GBCT_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -108,9 +110,12 @@ SAGBC_RUN_FIELDS = (
     "algorithm", "dataset", "seed", "sample_size", "status", *METRICS,
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
+GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "gbct":
+        return GBCT_PARAMS
     if algorithm == "sagbc":
         return SAGBC_PARAMS
     if algorithm == "gbsc":
@@ -134,6 +139,9 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "gbct":
+        if not 0 <= float(params["noise_density_ratio"]): raise ValueError("gbct: noise_density_ratio must be non-negative")
+        return
     if algorithm == "sagbc":
         sample_size = params["sample_size"]
         if isinstance(sample_size, bool) or not isinstance(sample_size, int) or sample_size < 2:
@@ -650,8 +658,10 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBSC | SAGBC:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBSC | SAGBC | GBCT:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "gbct":
+        return GBCT(GBCTConfig(n_clusters=n_clusters, noise_density_ratio=float(algorithm_config["noise_density_ratio"])))
     if algorithm == "sagbc":
         if sagbc_sample_size is None:
             raise ValueError("sagbc: resolved sample_size is required")
@@ -1274,12 +1284,35 @@ def _run_sagbc(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[
     return _summarize_sagbc(output_dir, config, sample_size)
 
 
+def _run_gbct(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    output = config.output_root / run_id / dataset.name / "gbct"
+    if output.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output}")
+    output.mkdir(parents=True, exist_ok=config.resume); labels_dir = output / "labels"; labels_dir.mkdir(exist_ok=True)
+    rows: list[dict[str, object]] = []
+    for seed in config.seeds:
+        row = {field: "" for field in GBCT_RUN_FIELDS}; row.update(algorithm="gbct", dataset=dataset.name, seed=seed, n_clusters=dataset.n_classes)
+        start = time.perf_counter()
+        try:
+            labels = _create_model("gbct", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed).fit_predict(minmax_scale(dataset.X))
+            path = labels_dir / f"seed_{seed}.npy"; np.save(path, labels)
+            row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+        except Exception as exc: row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc))
+        rows.append(row)
+    _write_csv(output / "all_runs.csv", rows, GBCT_RUN_FIELDS); success = [row for row in rows if row["status"] == "success"]
+    best: dict[str, object] = {"dataset": dataset.name, "n_clusters": dataset.n_classes, "success_runs": len(success)}
+    for metric in METRICS: best[f"{metric}_mean"], best[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+    best.update(runtime_seconds_mean=_mean_std(success,"runtime_seconds")[0] if success else float("nan"), runtime_seconds_std=_mean_std(success,"runtime_seconds")[1] if success else float("nan"), runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
+    _write_csv(output / "grid_summary.csv", [best], tuple(best)); _write_csv(output / "best_parameter_combination.csv", [best], tuple(best)); _write_json(output / "experiment_summary.json", {"dataset":dataset.name,"algorithm":"gbct","planned_runs":len(config.seeds),"completed_rows":len(rows)})
+    return best
+
+
 def _run_algorithm_grid(
     dataset: Dataset,
     config: ExperimentConfig,
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "gbct": return _run_gbct(dataset, config, run_id)
     if algorithm == "sagbc":
         return _run_sagbc(dataset, config, run_id)
     if algorithm == "gbsc":
@@ -1708,7 +1741,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gbsc", "sagbc", "gbct"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1735,9 +1768,11 @@ def main() -> int:
                 if algorithm == "gbsc"
                 else {"sample_size": int(best["sample_size"])}
                 if algorithm == "sagbc"
+                else {"n_clusters": int(best["n_clusters"])}
+                if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gbsc", "sagbc"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gbsc", "sagbc", "gbct"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

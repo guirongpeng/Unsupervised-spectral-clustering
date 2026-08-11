@@ -160,6 +160,11 @@ SAGBC_PARAMS = {
     "sample_size": 5000,
 }
 
+GBCT_PARAMS = {
+    # 官方源码固定：初始 sqrt(n) 粗划分、细分 2-Means、噪声密度阈值 0.2；不做网格搜索。
+    "noise_density_ratio": 0.2,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
