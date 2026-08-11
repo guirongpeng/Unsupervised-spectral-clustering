@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 RUN_ID="v3_v4_20260811"
-WORKERS=9
+WORKERS=4
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 nohup "$PYTHON_BIN" -u run_v3_v4_small_parallel.py \
