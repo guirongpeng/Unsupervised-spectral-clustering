@@ -150,7 +150,7 @@ class ExperimentConfig:
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
     output_root: Path = ROOT / "results"
     run_id: str | None = None              # None: 自动生成，指定：使用指定ID
-    resume: bool = False                   # False: 重新运行，True: 覆盖已存在的结果
+    resume: bool = True                   # False: 重新运行，True: 覆盖已存在的结果
 
 
 DATASETS = {
