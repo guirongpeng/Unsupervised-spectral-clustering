@@ -26,6 +26,7 @@ from algorithms.gbsc import GBSC, GBSCConfig
 from algorithms.sagbc import SAGBC, SAGBCConfig
 from algorithms.gbct import GBCT, GBCTConfig
 from algorithms.mgnr_nard import MGNRNARD, NARDConfig
+from algorithms.m3w import M3W, M3WConfig
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -35,6 +36,7 @@ from config import (
     SAGBC_PARAMS,
     GBCT_PARAMS,
     MGNR_NARD_PARAMS,
+    M3W_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -120,9 +122,12 @@ SAGBC_RUN_FIELDS = (
 )
 GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 NARD_RUN_FIELDS = ("algorithm", "dataset", "seed", "radius_detection_factor", "dbscan_core_factor", "hcdc_small_cluster_fraction", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+M3W_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "levels", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "m3w":
+        return M3W_PARAMS
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
         return MGNR_NARD_PARAMS
     if algorithm == "gbct":
@@ -152,6 +157,13 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "m3w":
+        k_values = tuple(int(value) for value in params["k_values"])
+        levels_values = tuple(int(value) for value in params["levels_values"])
+        if not k_values or not levels_values or any(value < 1 for value in (*k_values, *levels_values)):
+            raise ValueError("m3w: k_values and levels_values must contain positive integers")
+        M3WConfig(**{key: value for key, value in params.items() if key not in {"k_values", "levels_values"}})
+        return
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
         if float(params["radius_detection_factor"]) <= 0 or float(params["dbscan_core_factor"]) <= 0 or not 0 <= float(params["hcdc_small_cluster_fraction"]) < 1:
             raise ValueError("NARD parameters must satisfy radius/core > 0 and small-cluster fraction in [0, 1)")
@@ -673,6 +685,8 @@ def _create_model(
     pdmf_neighbors: int | float | None = None,
     graph_neighbors: int | float | None = None,
     pdmf_similarity_lambda: float | None = None,
+    m3w_k: int | None = None,
+    m3w_levels: int | None = None,
     stability_delta: float | None = None,
     redundancy_beta: float | None = None,
     gamma: float | None = None,
@@ -684,8 +698,12 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "m3w":
+        if m3w_k is None or m3w_levels is None:
+            raise ValueError("m3w: k and levels are required")
+        return M3W(M3WConfig(k=m3w_k, levels=m3w_levels, **{key: value for key, value in algorithm_config.items() if key not in {"k_values", "levels_values"}}))
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
         return MGNRNARD(NARDConfig(
             backend=algorithm.removesuffix("_nard"),
@@ -859,6 +877,14 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "m3w":
+        return {
+            "clustering": "official M3W reverse-kNN border peeling and three-way allocation",
+            "cluster_count": "estimated from connected core components",
+            "k_values": algorithm_config["k_values"],
+            "levels_values": algorithm_config["levels_values"],
+            **{key: value for key, value in algorithm_config.items() if key not in {"k_values", "levels_values"}},
+        }
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
         return {
             "granular_ball_generation": "official MGNR distribution-measure division and global-radius normalization",
@@ -1275,6 +1301,49 @@ def _run_nard(dataset: Dataset, config: ExperimentConfig, run_id: str, algorithm
     return best
 
 
+def _run_m3w(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("m3w")
+    combinations = tuple((int(k), int(levels)) for k in dict.fromkeys(params["k_values"]) for levels in dict.fromkeys(params["levels_values"]))
+    output_dir = config.output_root / run_id / dataset.name / "m3w"
+    if output_dir.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume); labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"; previous = _read_csv(all_runs_path) if config.resume else []; completed = {(int(row["seed"]), int(row["k"]), int(row["levels"])) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "m3w", "dataset": dataset.name, "seeds": config.seeds, "k_values": params["k_values"], "levels_values": params["levels_values"], "preprocessing": "none", "nmi_average_method": "arithmetic", "selection_rule": "maximize mean ACC across seeds", "algorithm_parameters": _algorithm_parameters("m3w", config)})
+    rows = list(previous); planned = len(config.seeds) * len(combinations)
+    for seed in config.seeds:
+        for k, levels in combinations:
+            if (seed, k, levels) in completed: continue
+            row: dict[str, object] = {field: "" for field in M3W_RUN_FIELDS}; row.update(algorithm="m3w", dataset=dataset.name, seed=seed, k=k, levels=levels); start = time.perf_counter()
+            try:
+                labels = _create_model("m3w", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, m3w_k=k, m3w_levels=levels).fit_predict(dataset.X.copy())
+                path = labels_dir / f"seed_{seed}_k_{k}_levels_{levels}.npy"; np.save(path, labels)
+                row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method="arithmetic").as_dict())
+            except Exception as exc:
+                row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            rows.append(row); _write_csv(all_runs_path, rows, M3W_RUN_FIELDS)
+            metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] m3w {dataset.name} seed={seed} k={k} levels={levels} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    grouped: dict[tuple[int, int], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success": grouped[(int(row["k"]), int(row["levels"]))].append(row)
+    fields = ("dataset", "algorithm", "k", "levels", "success_runs", *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")), "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum")
+    summaries: list[dict[str, object]] = []
+    for k, levels in combinations:
+        success = grouped.get((k, levels), []); item: dict[str, object] = {"dataset": dataset.name, "algorithm": "m3w", "k": k, "levels": levels, "success_runs": len(success)}
+        for metric in METRICS: item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+        runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success)); summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields)
+    candidates = [item for item in summaries if int(item["success_runs"]) == len(config.seeds) and math.isfinite(float(item["acc_mean"]))]
+    if not candidates: raise RuntimeError("No M3W parameter combination completed every seed")
+    best = min(candidates, key=lambda item: (-float(item["acc_mean"]), -float(item["nmi_mean"]), -float(item["f_measure_mean"]), float(item["runtime_seconds_mean"]), int(item["k"]), int(item["levels"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}
+    _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "m3w", "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1482,6 +1551,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "m3w":
+        return _run_m3w(dataset, config, run_id)
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
         return _run_nard(dataset, config, run_id, algorithm)
     if algorithm == "gbct": return _run_gbct(dataset, config, run_id)
@@ -1915,7 +1986,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1938,6 +2009,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {"k": int(best["k"]), "levels": int(best["levels"]), **{key: value for key, value in M3W_PARAMS.items() if key not in {"k_values", "levels_values"}}}
+                if algorithm == "m3w"
                 else {key: best[key] for key in MGNR_NARD_PARAMS}
                 if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}
                 else {"gamma": float(best["gamma"]), "delta": float(best["delta"]), "sigma": float(best["sigma"])}
@@ -1950,7 +2023,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

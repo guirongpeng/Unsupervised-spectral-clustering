@@ -186,6 +186,23 @@ MGNR_NARD_PARAMS = {
     "hcdc_small_cluster_fraction": 0.01,
 }
 
+M3W_PARAMS = {
+    # 论文实验网格：反向 kNN 邻域数 k ∈ {5,...,30}。
+    "k_values": tuple(range(5, 31)),
+    # 论文实验网格：边界剥离层数 L ∈ {2,...,12}。
+    "levels_values": tuple(range(2, 13)),
+    # 其余均为官方 CLI 固定常量。
+    "link_distance_expansion_factor": 1.6,
+    "core_points_threshold": 0.6,
+    "dvalue_threshold": 0.0,
+    "border_percentile": 0.1,
+    "mean_border_eps": 0.15,
+    "stopping_percentile": 0.01,
+    "min_cluster_size": 2,
+    "convergence_constant": 0,
+    "merge_core_points": True,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -194,7 +211,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
