@@ -25,6 +25,7 @@ from algorithms.gb_pojg_gbsc import GBPOJGGBSC, GBPOJGGBSCConfig
 from algorithms.gbsc import GBSC, GBSCConfig
 from algorithms.sagbc import SAGBC, SAGBCConfig
 from algorithms.gbct import GBCT, GBCTConfig
+from algorithms.mgnr_nard import MGNRNARD, NARDConfig
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -33,6 +34,7 @@ from config import (
     GBSC_PARAMS,
     SAGBC_PARAMS,
     GBCT_PARAMS,
+    MGNR_NARD_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -117,9 +119,12 @@ SAGBC_RUN_FIELDS = (
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
 GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+NARD_RUN_FIELDS = ("algorithm", "dataset", "seed", "radius_detection_factor", "dbscan_core_factor", "hcdc_small_cluster_fraction", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+        return MGNR_NARD_PARAMS
     if algorithm == "gbct":
         return GBCT_PARAMS
     if algorithm == "sagbc":
@@ -147,6 +152,10 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+        if float(params["radius_detection_factor"]) <= 0 or float(params["dbscan_core_factor"]) <= 0 or not 0 <= float(params["hcdc_small_cluster_fraction"]) < 1:
+            raise ValueError("NARD parameters must satisfy radius/core > 0 and small-cluster fraction in [0, 1)")
+        return
     if algorithm == "gbct":
         if not 0 <= float(params["noise_density_ratio"]): raise ValueError("gbct: noise_density_ratio must be non-negative")
         return
@@ -675,8 +684,15 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+        return MGNRNARD(NARDConfig(
+            backend=algorithm.removesuffix("_nard"),
+            radius_detection_factor=float(algorithm_config["radius_detection_factor"]),
+            dbscan_core_factor=float(algorithm_config["dbscan_core_factor"]),
+            hcdc_small_cluster_fraction=float(algorithm_config["hcdc_small_cluster_fraction"]),
+        ))
     if algorithm == "gbct":
         return GBCT(GBCTConfig(n_clusters=n_clusters, noise_density_ratio=float(algorithm_config["noise_density_ratio"])))
     if algorithm == "sagbc":
@@ -843,6 +859,13 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+        return {
+            "granular_ball_generation": "official MGNR distribution-measure division and global-radius normalization",
+            "nard_density": "official MGN, SDGS and within-SDGS normalized adaptive relative density",
+            "backend": algorithm.removesuffix("_nard"),
+            **algorithm_config,
+        }
     if algorithm == "sagbc":
         return {
             "anchor_sampling": "official random representative-point sampling; min(config.sample_size, n_samples)",
@@ -1219,6 +1242,39 @@ def _run_gb_pojg_gbsc_grid(dataset: Dataset, config: ExperimentConfig, run_id: s
     return _summarize_gb_pojg_gbsc(output_dir, config, combinations)
 
 
+def _run_nard(dataset: Dataset, config: ExperimentConfig, run_id: str, algorithm: str) -> dict[str, object]:
+    params = _get_algorithm_config(algorithm)
+    output_dir = config.output_root / run_id / dataset.name / algorithm
+    if output_dir.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume); labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"; previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {int(row["seed"]) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": algorithm, "dataset": dataset.name, "seeds": config.seeds, "preprocessing": "global_featurewise_minmax_to_0_1", "nmi_average_method": config.nmi_average_method, "algorithm_parameters": _algorithm_parameters(algorithm, config)})
+    X = minmax_scale(dataset.X); rows = list(previous); planned = len(config.seeds)
+    for seed in config.seeds:
+        if seed in completed: continue
+        row: dict[str, object] = {field: "" for field in NARD_RUN_FIELDS}
+        row.update(algorithm=algorithm, dataset=dataset.name, seed=seed, **params); start = time.perf_counter()
+        try:
+            labels = _create_model(algorithm, config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed).fit_predict(X.copy())
+            path = labels_dir / f"seed_{seed}.npy"; np.save(path, labels)
+            row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+        except Exception as exc:
+            row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        rows.append(row); _write_csv(all_runs_path, rows, NARD_RUN_FIELDS)
+        metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] {algorithm} {dataset.name} seed={seed} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    success = [row for row in rows if row["status"] == "success"]
+    best: dict[str, object] = {"dataset": dataset.name, "algorithm": algorithm, **params, "success_runs": len(success)}
+    for metric in METRICS: best[f"{metric}_mean"], best[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+    runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); best.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
+    fields = tuple(best); _write_csv(output_dir / "grid_summary.csv", [best], fields); _write_csv(output_dir / "best_parameter_combination.csv", [best], fields)
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": algorithm, "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1426,6 +1482,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
+        return _run_nard(dataset, config, run_id, algorithm)
     if algorithm == "gbct": return _run_gbct(dataset, config, run_id)
     if algorithm == "sagbc":
         return _run_sagbc(dataset, config, run_id)
@@ -1857,7 +1915,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -1880,6 +1938,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {key: best[key] for key in MGNR_NARD_PARAMS}
+                if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}
                 else {"gamma": float(best["gamma"]), "delta": float(best["delta"]), "sigma": float(best["sigma"])}
                 if algorithm == "gb_pojg_gbsc"
                 else {"sigma": float(best["sigma"])}
@@ -1890,7 +1950,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

@@ -177,6 +177,15 @@ GBCT_PARAMS = {
     "noise_density_ratio": 0.2,
 }
 
+MGNR_NARD_PARAMS = {
+    # GB 半径归一化阈值：球半径大于 factor*max(mean_radius, median_radius) 时继续划分；官方源码固定 2。
+    "radius_detection_factor": 2.0,
+    # 仅 DBSCAN-NARD：核心球条件 NARD >= factor*mean(NARD)；官方源码固定 0.4。论文固定为0.25
+    "dbscan_core_factor": 0.4,
+    # 仅 HCDC-NARD：删除规模小于 fraction*球数的簇；官方源码固定 0.01。
+    "hcdc_small_cluster_fraction": 0.01,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -185,7 +194,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
