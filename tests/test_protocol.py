@@ -134,6 +134,18 @@ def test_dataset_catalog_contains_both_papers_datasets() -> None:
         "PenDigits",
         "Letter",
         "Covertype",
+        "Wine",
+        "Glass",
+        "Seeds",
+        "Ionosphere",
+        "WDBC",
+        "Iris",
+        "Ecoli",
+        "Libras",
+        "Optdigits",
+        "Sonar",
+        "Segment",
+        "Vehicle",
     }
     assert all(config.path.suffix == ".npz" for config in DATASETS.values())
 

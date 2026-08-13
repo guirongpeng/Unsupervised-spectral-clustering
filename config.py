@@ -296,6 +296,18 @@ DATASETS = {
         "PenDigits",
         "Letter",
         "Covertype",
+        "Wine",
+        "Glass",
+        "Seeds",
+        "Ionosphere",
+        "WDBC",
+        "Iris",
+        "Ecoli",
+        "Libras",
+        "Optdigits",
+        "Sonar",
+        "Segment",
+        "Vehicle",
     )
 }
 
