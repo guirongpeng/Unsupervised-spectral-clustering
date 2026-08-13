@@ -27,6 +27,7 @@ from algorithms.sagbc import SAGBC, SAGBCConfig
 from algorithms.gbct import GBCT, GBCTConfig
 from algorithms.mgnr_nard import MGNRNARD, NARDConfig
 from algorithms.m3w import M3W, M3WConfig
+from algorithms.gb_dp import GBDP, GBDPConfig
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -37,6 +38,7 @@ from config import (
     GBCT_PARAMS,
     MGNR_NARD_PARAMS,
     M3W_PARAMS,
+    GB_DP_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -123,9 +125,12 @@ SAGBC_RUN_FIELDS = (
 GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 NARD_RUN_FIELDS = ("algorithm", "dataset", "seed", "radius_detection_factor", "dbscan_core_factor", "hcdc_small_cluster_fraction", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 M3W_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "levels", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+GB_DP_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "random_state", "n_init", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "gb_dp":
+        return GB_DP_PARAMS
     if algorithm == "m3w":
         return M3W_PARAMS
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
@@ -157,6 +162,9 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dp":
+        GBDPConfig(n_clusters=2, **params)
+        return
     if algorithm == "m3w":
         k_values = tuple(int(value) for value in params["k_values"])
         levels_values = tuple(int(value) for value in params["levels_values"])
@@ -698,8 +706,10 @@ def _create_model(
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W | GBDP:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dp":
+        return GBDP(GBDPConfig(n_clusters=n_clusters, **algorithm_config))
     if algorithm == "m3w":
         if m3w_k is None or m3w_levels is None:
             raise ValueError("m3w: k and levels are required")
@@ -877,6 +887,13 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dp":
+        return {
+            "granular_ball_generation": "official recursive 2-means until ball size < ceil(sqrt(n))",
+            "density_peaks": "official granular-ball density and nearest-higher-density propagation",
+            "center_selection": "automation: top n_clusters by rho * delta, replacing official decision-graph manual selection",
+            **algorithm_config,
+        }
     if algorithm == "m3w":
         return {
             "clustering": "official M3W reverse-kNN border peeling and three-way allocation",
@@ -1344,6 +1361,35 @@ def _run_m3w(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[st
     return best
 
 
+def _run_gb_dp(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("gb_dp"); output_dir = config.output_root / run_id / dataset.name / "gb_dp"
+    if output_dir.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume); labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"; previous = _read_csv(all_runs_path) if config.resume else []; completed = {int(row["seed"]) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "gb_dp", "dataset": dataset.name, "seeds": config.seeds, "preprocessing": "global_featurewise_minmax_to_0_1", "nmi_average_method": config.nmi_average_method, "algorithm_parameters": _algorithm_parameters("gb_dp", config)})
+    X = minmax_scale(dataset.X); rows = list(previous); planned = len(config.seeds)
+    for seed in config.seeds:
+        if seed in completed: continue
+        row: dict[str, object] = {field: "" for field in GB_DP_RUN_FIELDS}; row.update(algorithm="gb_dp", dataset=dataset.name, seed=seed, n_clusters=dataset.n_classes, **params); start = time.perf_counter()
+        try:
+            labels = _create_model("gb_dp", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed).fit_predict(X.copy())
+            path = labels_dir / f"seed_{seed}.npy"; np.save(path, labels)
+            row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+        except Exception as exc:
+            row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        rows.append(row); _write_csv(all_runs_path, rows, GB_DP_RUN_FIELDS)
+        metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] gb_dp {dataset.name} seed={seed} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    success = [row for row in rows if row["status"] == "success"]; best: dict[str, object] = {"dataset": dataset.name, "algorithm": "gb_dp", "n_clusters": dataset.n_classes, **params, "success_runs": len(success)}
+    for metric in METRICS: best[f"{metric}_mean"], best[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+    runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); best.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
+    fields = tuple(best); _write_csv(output_dir / "grid_summary.csv", [best], fields); _write_csv(output_dir / "best_parameter_combination.csv", [best], fields)
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "gb_dp", "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1551,6 +1597,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "gb_dp":
+        return _run_gb_dp(dataset, config, run_id)
     if algorithm == "m3w":
         return _run_m3w(dataset, config, run_id)
     if algorithm in {"dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard"}:
@@ -1986,7 +2034,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -2009,6 +2057,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {"n_clusters": int(best["n_clusters"]), **GB_DP_PARAMS}
+                if algorithm == "gb_dp"
                 else {"k": int(best["k"]), "levels": int(best["levels"]), **{key: value for key, value in M3W_PARAMS.items() if key not in {"k_values", "levels_values"}}}
                 if algorithm == "m3w"
                 else {key: best[key] for key in MGNR_NARD_PARAMS}
@@ -2023,7 +2073,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

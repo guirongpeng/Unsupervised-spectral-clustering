@@ -203,6 +203,13 @@ M3W_PARAMS = {
     "merge_core_points": True,
 }
 
+# 官方代码要求从决策图人工选择中心、不适合作为对比算法，故不使用。
+GB_DP_PARAMS = {
+    # 官方粒球二分的固定 K-Means 随机种子和重复次数；中心由 rho*delta 前 K 个粒球自动选择。
+    "random_state": 8,
+    "n_init": 1,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -211,7 +218,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
