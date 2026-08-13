@@ -210,6 +210,16 @@ GB_DP_PARAMS = {
     "n_init": 1,
 }
 
+GB_DBSCAN_PARAMS = {
+    # 论文 Section 4.1：Ratio 的范围为 [0, 1]、步长为 0.01。0 会导致没有 Core-GB，故实际可运行网格为 {0.01,...,1.00}。
+    "ratio_values": tuple(value / 100 for value in range(1, 101)),
+    # 官方 KNN 粒球生成规则 K=ceil(sqrt(n))*0.3；None 表示按该规则自动计算。
+    "n_neighbors": None,
+    "neighbor_scale": 0.3,
+    "neighbor_algorithm": "auto",
+    "leaf_size": 30,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -218,7 +228,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子

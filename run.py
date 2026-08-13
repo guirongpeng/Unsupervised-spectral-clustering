@@ -28,6 +28,7 @@ from algorithms.gbct import GBCT, GBCTConfig
 from algorithms.mgnr_nard import MGNRNARD, NARDConfig
 from algorithms.m3w import M3W, M3WConfig
 from algorithms.gb_dp import GBDP, GBDPConfig
+from algorithms.gb_dbscan import GBDBSCAN, GBDBSCANConfig
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -39,6 +40,7 @@ from config import (
     MGNR_NARD_PARAMS,
     M3W_PARAMS,
     GB_DP_PARAMS,
+    GB_DBSCAN_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -126,9 +128,12 @@ GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METR
 NARD_RUN_FIELDS = ("algorithm", "dataset", "seed", "radius_detection_factor", "dbscan_core_factor", "hcdc_small_cluster_fraction", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 M3W_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "levels", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 GB_DP_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "random_state", "n_init", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+GB_DBSCAN_RUN_FIELDS = ("algorithm", "dataset", "seed", "ratio", "n_neighbors", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "gb_dbscan":
+        return GB_DBSCAN_PARAMS
     if algorithm == "gb_dp":
         return GB_DP_PARAMS
     if algorithm == "m3w":
@@ -162,6 +167,12 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dbscan":
+        values = tuple(float(value) for value in params["ratio_values"])
+        if not values or any(not math.isfinite(value) or not 0.0 < value <= 1.0 for value in values):
+            raise ValueError("gb_dbscan: ratio_values must contain finite values in (0, 1]")
+        GBDBSCANConfig(ratio=values[0], **{key: value for key, value in params.items() if key != "ratio_values"})
+        return
     if algorithm == "gb_dp":
         GBDPConfig(n_clusters=2, **params)
         return
@@ -700,14 +711,19 @@ def _create_model(
     gamma: float | None = None,
     delta: float | None = None,
     sigma: float | None = None,
+    gb_dbscan_ratio: float | None = None,
     sagbc_sample_size: int | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W | GBDP:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W | GBDP | GBDBSCAN:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dbscan":
+        if gb_dbscan_ratio is None:
+            raise ValueError("gb_dbscan: ratio is required")
+        return GBDBSCAN(GBDBSCANConfig(ratio=float(gb_dbscan_ratio), **{key: value for key, value in algorithm_config.items() if key != "ratio_values"}))
     if algorithm == "gb_dp":
         return GBDP(GBDPConfig(n_clusters=n_clusters, **algorithm_config))
     if algorithm == "m3w":
@@ -887,6 +903,14 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "gb_dbscan":
+        return {
+            "granular_ball_generation": "official first-unvisited-sample KNN balls, K=ceil(sqrt(n))*0.3",
+            "core_ball_selection": "source Ratio grid: smallest-radius int(number_of_balls * Ratio) balls",
+            "clustering": "official overlapping Core-GB expansion and Non-Core-GB assignment",
+            "ratio_values": algorithm_config["ratio_values"],
+            **{key: value for key, value in algorithm_config.items() if key != "ratio_values"},
+        }
     if algorithm == "gb_dp":
         return {
             "granular_ball_generation": "official recursive 2-means until ball size < ceil(sqrt(n))",
@@ -1390,6 +1414,57 @@ def _run_gb_dp(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[
     return best
 
 
+def _run_gb_dbscan(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("gb_dbscan")
+    ratios = tuple(dict.fromkeys(float(value) for value in params["ratio_values"]))
+    output_dir = config.output_root / run_id / dataset.name / "gb_dbscan"
+    if output_dir.exists() and not config.resume:
+        raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume)
+    labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"
+    previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {(int(row["seed"]), float(row["ratio"])) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "gb_dbscan", "dataset": dataset.name, "seeds": config.seeds, "ratio_values": ratios, "preprocessing": "global_featurewise_minmax_to_0_1", "nmi_average_method": "geometric", "selection_rule": "maximize mean ACC across seeds", "algorithm_parameters": _algorithm_parameters("gb_dbscan", config)})
+    rows = list(previous); planned = len(config.seeds) * len(ratios); X = minmax_scale(dataset.X)
+    for seed in config.seeds:
+        for ratio in ratios:
+            if (seed, ratio) in completed:
+                continue
+            row: dict[str, object] = {field: "" for field in GB_DBSCAN_RUN_FIELDS}
+            row.update(algorithm="gb_dbscan", dataset=dataset.name, seed=seed, ratio=ratio, n_neighbors="auto")
+            start = time.perf_counter()
+            try:
+                model = _create_model("gb_dbscan", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, gb_dbscan_ratio=ratio)
+                labels = model.fit_predict(X.copy())
+                path = labels_dir / f"seed_{seed}_ratio_{ratio:.2f}.npy"; np.save(path, labels)
+                row.update(status="success", n_neighbors=model.n_neighbors_, runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method="geometric").as_dict())
+            except Exception as exc:
+                row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            rows.append(row); _write_csv(all_runs_path, rows, GB_DBSCAN_RUN_FIELDS)
+            metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] gb_dbscan {dataset.name} seed={seed} ratio={ratio:.2f} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    grouped: dict[float, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success": grouped[float(row["ratio"])].append(row)
+    fields = ("dataset", "algorithm", "ratio", "success_runs", *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")), "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum")
+    summaries: list[dict[str, object]] = []
+    for ratio in ratios:
+        success = grouped.get(ratio, []); item: dict[str, object] = {"dataset": dataset.name, "algorithm": "gb_dbscan", "ratio": ratio, "success_runs": len(success)}
+        for metric in METRICS: item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+        runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success)); summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields)
+    candidates = [item for item in summaries if int(item["success_runs"]) == len(config.seeds) and math.isfinite(float(item["acc_mean"]))]
+    if not candidates: raise RuntimeError("No GB-DBSCAN Ratio completed every seed")
+    best = min(candidates, key=lambda item: (-float(item["acc_mean"]), -float(item["nmi_mean"]), -float(item["f_measure_mean"]), float(item["runtime_seconds_mean"]), float(item["ratio"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}
+    _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "gb_dbscan", "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1597,6 +1672,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "gb_dbscan":
+        return _run_gb_dbscan(dataset, config, run_id)
     if algorithm == "gb_dp":
         return _run_gb_dp(dataset, config, run_id)
     if algorithm == "m3w":
@@ -2034,7 +2111,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -2057,6 +2134,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {"ratio": float(best["ratio"]), **{key: value for key, value in GB_DBSCAN_PARAMS.items() if key != "ratio_values"}}
+                if algorithm == "gb_dbscan"
                 else {"n_clusters": int(best["n_clusters"]), **GB_DP_PARAMS}
                 if algorithm == "gb_dp"
                 else {"k": int(best["k"]), "levels": int(best["levels"]), **{key: value for key, value in M3W_PARAMS.items() if key not in {"k_values", "levels_values"}}}
@@ -2073,7 +2152,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),
