@@ -233,6 +233,16 @@ MGAGC_PARAMS = {
     "tol": 1e-4,
 }
 
+FI_GBHC_PARAMS = {
+    # 论文 Table 3、Table 7：FI-GBHC 的 ratio 搜索网格。
+    "ratio_values": (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05),
+}
+
+PB_GBHC_PARAMS = {
+    # 论文 Table 3、Table 7：PB-GBHC 的 q 搜索网格。
+    "q_values": (1, 5, 10, 20, 25, 30),
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -241,7 +251,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选: fi_gbhc, pb_gbhc（及已有算法）
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
