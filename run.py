@@ -29,6 +29,7 @@ from algorithms.mgnr_nard import MGNRNARD, NARDConfig
 from algorithms.m3w import M3W, M3WConfig
 from algorithms.gb_dp import GBDP, GBDPConfig
 from algorithms.gb_dbscan import GBDBSCAN, GBDBSCANConfig
+from algorithms.mgagc import MGAGC, MGAGCConfig, generate_anchors
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -41,6 +42,7 @@ from config import (
     M3W_PARAMS,
     GB_DP_PARAMS,
     GB_DBSCAN_PARAMS,
+    MGAGC_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -129,9 +131,12 @@ NARD_RUN_FIELDS = ("algorithm", "dataset", "seed", "radius_detection_factor", "d
 M3W_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "levels", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 GB_DP_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "random_state", "n_init", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 GB_DBSCAN_RUN_FIELDS = ("algorithm", "dataset", "seed", "ratio", "n_neighbors", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+MGAGC_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "beta", "lambda_init", "n_anchors", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "mgagc":
+        return MGAGC_PARAMS
     if algorithm == "gb_dbscan":
         return GB_DBSCAN_PARAMS
     if algorithm == "gb_dp":
@@ -167,6 +172,12 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "mgagc":
+        betas, lambdas = tuple(float(value) for value in params["beta_values"]), tuple(float(value) for value in params["lambda_init_values"])
+        if not betas or any(not math.isfinite(value) or value <= 0 for value in betas) or not lambdas or any(not math.isfinite(value) or value <= 0 for value in lambdas):
+            raise ValueError("mgagc: beta_values and lambda_init_values must contain finite positive values")
+        MGAGCConfig(n_clusters=2, k=1, beta=betas[0], lambda_init=lambdas[0], min_points=int(params["min_points"]), max_iter=int(params["max_iter"]), tol=float(params["tol"]))
+        return
     if algorithm == "gb_dbscan":
         values = tuple(float(value) for value in params["ratio_values"])
         if not values or any(not math.isfinite(value) or not 0.0 < value <= 1.0 for value in values):
@@ -712,14 +723,21 @@ def _create_model(
     delta: float | None = None,
     sigma: float | None = None,
     gb_dbscan_ratio: float | None = None,
+    mgagc_k: int | None = None,
+    mgagc_beta: float | None = None,
+    mgagc_lambda_init: float | None = None,
     sagbc_sample_size: int | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
-) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W | GBDP | GBDBSCAN:
+) -> PLGBFSC | MYV0 | MYV1 | MYV2 | MYV3 | MYV4 | GBPOJGGBDPC | GBPOJGGBSC | GBSC | SAGBC | GBCT | MGNRNARD | M3W | GBDP | GBDBSCAN | MGAGC:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "mgagc":
+        if mgagc_k is None or mgagc_beta is None or mgagc_lambda_init is None:
+            raise ValueError("mgagc: k, beta and lambda_init are required")
+        return MGAGC(MGAGCConfig(n_clusters=n_clusters, k=mgagc_k, beta=mgagc_beta, lambda_init=mgagc_lambda_init, min_points=int(algorithm_config["min_points"]), max_iter=int(algorithm_config["max_iter"]), tol=float(algorithm_config["tol"])))
     if algorithm == "gb_dbscan":
         if gb_dbscan_ratio is None:
             raise ValueError("gb_dbscan: ratio is required")
@@ -903,6 +921,13 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "mgagc":
+        return {
+            "anchor_generation": "official adaptive binary granular-ball splitting with min_points=2",
+            "graph_clustering": "official self-weighted sample-anchor graph and connected-component labels",
+            "k_rule": "official adaptive range derived from the generated anchor count",
+            **algorithm_config,
+        }
     if algorithm == "gb_dbscan":
         return {
             "granular_ball_generation": "official first-unvisited-sample KNN balls, K=ceil(sqrt(n))*0.3",
@@ -1465,6 +1490,51 @@ def _run_gb_dbscan(dataset: Dataset, config: ExperimentConfig, run_id: str) -> d
     return best
 
 
+def _run_mgagc(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("mgagc")
+    output_dir = config.output_root / run_id / dataset.name / "mgagc"
+    if output_dir.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume); labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    X = minmax_scale(dataset.X); anchors = generate_anchors(X, int(params["min_points"])); anchor_count = anchors.shape[1]
+    step = max(int(np.sqrt(anchor_count) / int(params["k_step_divisor"])), 2)
+    k_values = tuple(range(1, int(np.sqrt(anchor_count)), step)) or (1,)
+    combinations = tuple((k, float(beta), float(lambda_init)) for k in k_values for beta in dict.fromkeys(params["beta_values"]) for lambda_init in dict.fromkeys(params["lambda_init_values"]))
+    all_runs_path = output_dir / "all_runs.csv"; previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {(int(row["seed"]), int(row["k"]), float(row["beta"]), float(row["lambda_init"])) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "mgagc", "dataset": dataset.name, "seeds": config.seeds, "n_anchors": anchor_count, "k_values": k_values, "beta_values": params["beta_values"], "lambda_init_values": params["lambda_init_values"], "preprocessing": "global_featurewise_minmax_to_0_1", "nmi_average_method": config.nmi_average_method, "selection_rule": "maximize mean ACC across seeds", "algorithm_parameters": _algorithm_parameters("mgagc", config)})
+    rows = list(previous); planned = len(config.seeds) * len(combinations)
+    for seed in config.seeds:
+        for k, beta, lambda_init in combinations:
+            if (seed, k, beta, lambda_init) in completed: continue
+            row: dict[str, object] = {field: "" for field in MGAGC_RUN_FIELDS}; row.update(algorithm="mgagc", dataset=dataset.name, seed=seed, k=k, beta=beta, lambda_init=lambda_init, n_anchors=anchor_count); start = time.perf_counter()
+            try:
+                model = _create_model("mgagc", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, mgagc_k=k, mgagc_beta=beta, mgagc_lambda_init=lambda_init); model.anchors = anchors
+                labels = model.fit_predict(X.copy()); path = labels_dir / f"seed_{seed}_k_{k}_beta_{beta:.2f}_lambda_{lambda_init:.2f}.npy"; np.save(path, labels)
+                row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+            except Exception as exc:
+                row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            rows.append(row); _write_csv(all_runs_path, rows, MGAGC_RUN_FIELDS)
+            metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] mgagc {dataset.name} seed={seed} k={k} beta={beta:.2f} lambda_init={lambda_init:.2f} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    grouped: dict[tuple[int, float, float], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success": grouped[(int(row["k"]), float(row["beta"]), float(row["lambda_init"]))].append(row)
+    fields = ("dataset", "algorithm", "k", "beta", "lambda_init", "n_anchors", "success_runs", *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")), "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum")
+    summaries: list[dict[str, object]] = []
+    for k, beta, lambda_init in combinations:
+        success = grouped.get((k, beta, lambda_init), []); item: dict[str, object] = {"dataset": dataset.name, "algorithm": "mgagc", "k": k, "beta": beta, "lambda_init": lambda_init, "n_anchors": anchor_count, "success_runs": len(success)}
+        for metric in METRICS: item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+        runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success)); summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields); candidates = [item for item in summaries if int(item["success_runs"]) == len(config.seeds) and math.isfinite(float(item["acc_mean"]))]
+    if not candidates: raise RuntimeError("No MGAGC parameter combination completed every seed")
+    best = min(candidates, key=lambda item: (-float(item["acc_mean"]), -float(item["nmi_mean"]), -float(item["f_measure_mean"]), float(item["runtime_seconds_mean"]), int(item["k"]), float(item["beta"]), float(item["lambda_init"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}; _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "mgagc", "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1672,6 +1742,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "mgagc":
+        return _run_mgagc(dataset, config, run_id)
     if algorithm == "gb_dbscan":
         return _run_gb_dbscan(dataset, config, run_id)
     if algorithm == "gb_dp":
@@ -2111,7 +2183,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -2134,6 +2206,8 @@ def main() -> int:
             best_params = (
                 {"gamma": float(best["gamma"]), "delta": float(best["delta"])}
                 if algorithm == "gb_pojg_gbdpc"
+                else {"k": int(best["k"]), "beta": float(best["beta"]), "lambda_init": float(best["lambda_init"]), **{key: value for key, value in MGAGC_PARAMS.items() if key not in {"k_step_divisor", "beta_values", "lambda_init_values"}}}
+                if algorithm == "mgagc"
                 else {"ratio": float(best["ratio"]), **{key: value for key, value in GB_DBSCAN_PARAMS.items() if key != "ratio_values"}}
                 if algorithm == "gb_dbscan"
                 else {"n_clusters": int(best["n_clusters"]), **GB_DP_PARAMS}
@@ -2152,7 +2226,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),

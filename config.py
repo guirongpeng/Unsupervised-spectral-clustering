@@ -220,6 +220,19 @@ GB_DBSCAN_PARAMS = {
     "leaf_size": 30,
 }
 
+MGAGC_PARAMS = {
+    # 官方 Notebook：k 从锚点数 m 自适应生成 range(1, floor(sqrt(m)), max(floor(sqrt(m)/10), 2))。
+    "k_step_divisor": 10,
+    # 官方 Notebook：beta ∈ {0.01, 0.03, ..., 0.19}。
+    "beta_values": tuple(value / 100 for value in range(1, 21, 2)),
+    # 官方 Notebook 固定为 1.0；用于连通分量数自适应调节的初始 lambda。
+    "lambda_init_values": (1.0,),
+    # 官方粒球锚点生成与图优化固定参数。
+    "min_points": 2,
+    "max_iter": 20,
+    "tol": 1e-4,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -228,7 +241,7 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan")
+    algorithms: tuple[str, ...] = ("my_v2",)  # 可选:("plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc")
     datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
