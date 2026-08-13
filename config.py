@@ -243,6 +243,11 @@ PB_GBHC_PARAMS = {
     "q_values": (1, 5, 10, 20, 25, 30),
 }
 
+EGBDPM_PARAMS = {
+    # 论文 Section 4.1：密度计算和球面测地距离共用的近邻数 k ∈ {2, 3, ..., 10}。
+    "k_neighbors_values": tuple(range(2, 11)),
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
