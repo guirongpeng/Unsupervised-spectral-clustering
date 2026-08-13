@@ -248,6 +248,18 @@ EGBDPM_PARAMS = {
     "k_neighbors_values": tuple(range(2, 11)),
 }
 
+AGC_ILD_PARAMS = {
+    # 论文 Table 3：锚点数 m ∈ {2^5, 2^6, ..., 2^12}；小数据集会自动截断为不超过样本数的最大 2 的幂。
+    "n_anchors_values": tuple(2**power for power in range(5, 13)),
+    # 论文 Table 3：不平衡正则 beta ∈ {10^-5, ..., 10^4}。这里完整保留论文的对数网格。
+    "beta_values": tuple(10.0**power for power in range(-5, 5)),
+    # 论文固定：邻近锚点数 k=5；alpha 按 2/(特征方差均值) 自动计算。
+    # 官方源码实际以 Z*q^(-1/4) 实现锚点度校正；不是独立 rho 网格参数。
+    "k_neighbors": 5,
+    "max_iter": 100,
+    "tolerance": 1e-6,
+}
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str

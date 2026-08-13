@@ -33,6 +33,7 @@ from algorithms.mgagc import MGAGC, MGAGCConfig, generate_anchors
 from algorithms.fi_gbhc import FIGBHC, FIGBHCConfig
 from algorithms.pb_gbhc import PBGBHC, PBGBHCConfig
 from algorithms.egbdpm import EGBDPM, EGBDPMConfig
+from algorithms.agc_ild import AGCILD, AGCILDConfig
 from config import (
     DATASETS,
     EXPERIMENT,
@@ -49,6 +50,7 @@ from config import (
     FI_GBHC_PARAMS,
     PB_GBHC_PARAMS,
     EGBDPM_PARAMS,
+    AGC_ILD_PARAMS,
     MY_V0_PARAMS,
     MY_V1_PARAMS,
     MY_V2_PARAMS,
@@ -141,9 +143,12 @@ MGAGC_RUN_FIELDS = ("algorithm", "dataset", "seed", "k", "beta", "lambda_init", 
 FI_GBHC_RUN_FIELDS = ("algorithm", "dataset", "seed", "ratio", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 PB_GBHC_RUN_FIELDS = ("algorithm", "dataset", "seed", "q", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 EGBDPM_RUN_FIELDS = ("algorithm", "dataset", "seed", "k_neighbors", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
+AGC_ILD_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_anchors", "beta", "rho", "k_neighbors", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
 
 
 def _get_algorithm_config(algorithm: str) -> dict[str, object]:
+    if algorithm == "agc_ild":
+        return AGC_ILD_PARAMS
     if algorithm == "egbdpm":
         return EGBDPM_PARAMS
     if algorithm == "fi_gbhc":
@@ -187,6 +192,13 @@ def _get_algorithm_config(algorithm: str) -> dict[str, object]:
 
 def _validate_algorithm_config(algorithm: str) -> None:
     params = _get_algorithm_config(algorithm)
+    if algorithm == "agc_ild":
+        anchors = tuple(int(value) for value in params["n_anchors_values"])
+        betas = tuple(float(value) for value in params["beta_values"])
+        if not anchors or any(value < 2 or value & (value - 1) for value in anchors) or not betas or any(value < 0 for value in betas):
+            raise ValueError("agc_ild: n_anchors_values must be powers of two and beta_values must be non-negative")
+        AGCILDConfig(anchors[0], betas[0], int(params["k_neighbors"]), int(params["max_iter"]), float(params["tolerance"]))
+        return
     if algorithm == "egbdpm":
         values = tuple(int(value) for value in params["k_neighbors_values"])
         if not values or any(value < 1 for value in values):
@@ -954,6 +966,13 @@ def _algorithm_parameters(
     config: ExperimentConfig,
 ) -> dict[str, object]:
     algorithm_config = _get_algorithm_config(algorithm)
+    if algorithm == "agc_ild":
+        return {
+            "anchor_generation": "paper BWHK: Boltzmann-weighted balanced hierarchical 2-means",
+            "anchor_graph": "paper local assignment with tempered anchor-degree correction",
+            "label_propagation": "paper coordinate descent for imbalance-aware anchor labels",
+            **algorithm_config,
+        }
     if algorithm == "mgagc":
         return {
             "anchor_generation": "official adaptive binary granular-ball splitting with min_points=2",
@@ -1651,6 +1670,53 @@ def _run_egbdpm_grid(dataset: Dataset, config: ExperimentConfig, run_id: str) ->
     return best
 
 
+def _run_agc_ild_grid(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
+    params = _get_algorithm_config("agc_ild")
+    anchors = tuple(sorted({value for value in (int(item) for item in params["n_anchors_values"]) if value <= dataset.X.shape[0]}))
+    betas = tuple(dict.fromkeys(float(value) for value in params["beta_values"]))
+    if not anchors:
+        raise ValueError("agc_ild: no configured power-of-two anchor count is valid for this dataset")
+    output_dir = config.output_root / run_id / dataset.name / "agc_ild"
+    if output_dir.exists() and not config.resume: raise FileExistsError(f"Result directory already exists: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=config.resume); labels_dir = output_dir / "labels"; labels_dir.mkdir(exist_ok=True)
+    all_runs_path = output_dir / "all_runs.csv"; previous = _read_csv(all_runs_path) if config.resume else []
+    completed = {(int(row["seed"]), int(row["n_anchors"]), float(row["beta"])) for row in previous}
+    _write_json(output_dir / "experiment_config.json", {"algorithm": "agc_ild", "dataset": dataset.name, "seeds": config.seeds, "n_anchors_values": anchors, "beta_values": betas, "n_clusters": dataset.n_classes, "preprocessing": "global_featurewise_minmax_to_0_1", "nmi_average_method": config.nmi_average_method, "selection_rule": "maximize mean ACC across seeds", "algorithm_parameters": _algorithm_parameters("agc_ild", config)})
+    rows = list(previous); planned = len(config.seeds) * len(anchors) * len(betas); X = minmax_scale(dataset.X)
+    for seed in config.seeds:
+        for n_anchors in anchors:
+            for beta in betas:
+                if (seed, n_anchors, beta) in completed: continue
+                row: dict[str, object] = {field: "" for field in AGC_ILD_RUN_FIELDS}; row.update(algorithm="agc_ild", dataset=dataset.name, seed=seed, n_anchors=n_anchors, beta=beta, rho=0.25, k_neighbors=params["k_neighbors"], n_clusters=dataset.n_classes); start = time.perf_counter()
+                try:
+                    model = AGCILD(AGCILDConfig(n_anchors, beta, int(params["k_neighbors"]), int(params["max_iter"]), float(params["tolerance"])), dataset.n_classes, random_state=seed)
+                    labels = model.fit_predict(X.copy()); path = labels_dir / f"seed_{seed}_m_{n_anchors}_beta_{beta:.0e}.npy"; np.save(path, labels)
+                    row.update(status="success", runtime_seconds=time.perf_counter()-start, prediction_path=path.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+                except Exception as exc:
+                    row.update(status="failed", runtime_seconds=time.perf_counter()-start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                rows.append(row); _write_csv(all_runs_path, rows, AGC_ILD_RUN_FIELDS)
+                metrics = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{planned}] agc_ild {dataset.name} seed={seed} m={n_anchors} beta={beta:.0e} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metrics}", flush=True)
+    grouped: dict[tuple[int, float], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success": grouped[(int(row["n_anchors"]), float(row["beta"]))].append(row)
+    fields = ("dataset", "algorithm", "n_anchors", "beta", "rho", "k_neighbors", "n_clusters", "success_runs", *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")), "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum")
+    summaries: list[dict[str, object]] = []
+    for n_anchors in anchors:
+        for beta in betas:
+            success = grouped.get((n_anchors, beta), []); item: dict[str, object] = {"dataset": dataset.name, "algorithm": "agc_ild", "n_anchors": n_anchors, "beta": beta, "rho": 0.25, "k_neighbors": params["k_neighbors"], "n_clusters": dataset.n_classes, "success_runs": len(success)}
+            for metric in METRICS: item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+            runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success)); summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields); candidates = [item for item in summaries if int(item["success_runs"]) == len(config.seeds) and math.isfinite(float(item["acc_mean"]))]
+    if not candidates: raise RuntimeError("No AGC-ILD parameter combination completed every seed")
+    best = min(candidates, key=lambda item: (-float(item["acc_mean"]), -float(item["nmi_mean"]), -float(item["f_measure_mean"]), float(item["runtime_seconds_mean"]), int(item["n_anchors"]), float(item["beta"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}; _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "agc_ild", "planned_runs": planned, "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
+
+
 def _summarize_gbsc(
     output_dir: Path, config: ExperimentConfig, sigma_values: tuple[float, ...]
 ) -> dict[str, object]:
@@ -1858,6 +1924,8 @@ def _run_algorithm_grid(
     run_id: str,
     algorithm: str,
 ) -> dict[str, object]:
+    if algorithm == "agc_ild":
+        return _run_agc_ild_grid(dataset, config, run_id)
     if algorithm == "egbdpm":
         return _run_egbdpm_grid(dataset, config, run_id)
     if algorithm in {"fi_gbhc", "pb_gbhc"}:
@@ -2303,7 +2371,7 @@ def main() -> int:
         raise KeyError(f"Unknown datasets: {unknown}")
     if len(EXPERIMENT.seeds) != len(set(EXPERIMENT.seeds)):
         raise ValueError("Seeds must be unique")
-    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc", "egbdpm"}
+    supported_algorithms = {"plgb_fsc", "my_v0", "my_v1", "my_v2", "my_v3", "my_v4", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc", "egbdpm", "agc_ild"}
     unknown_algorithms = sorted(set(EXPERIMENT.algorithms).difference(supported_algorithms))
     if unknown_algorithms:
         raise KeyError(f"Unknown algorithms: {unknown_algorithms}")
@@ -2324,7 +2392,9 @@ def main() -> int:
                 algorithm,
             )
             best_params = (
-                {"k_neighbors": int(best["k_neighbors"]), "n_clusters": int(best["n_clusters"])}
+                {"n_anchors": int(best["n_anchors"]), "beta": float(best["beta"]), "rho": float(best["rho"]), "k_neighbors": int(best["k_neighbors"]), "n_clusters": int(best["n_clusters"])}
+                if algorithm == "agc_ild"
+                else {"k_neighbors": int(best["k_neighbors"]), "n_clusters": int(best["n_clusters"])}
                 if algorithm == "egbdpm"
                 else {"ratio": float(best["ratio"]), "n_clusters": int(best["n_clusters"])}
                 if algorithm == "fi_gbhc"
@@ -2352,7 +2422,7 @@ def main() -> int:
                 if algorithm == "gbct"
                 else {"theta": float(best["theta"])}
             )
-            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc", "egbdpm"}:
+            if algorithm not in {"my_v2", "gb_pojg_gbdpc", "gb_pojg_gbsc", "gbsc", "sagbc", "gbct", "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard", "m3w", "gb_dp", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc", "egbdpm", "agc_ild"}:
                 best_params.update(
                     p1=int(best["p1"]),
                     p2=int(best["p2"]),
