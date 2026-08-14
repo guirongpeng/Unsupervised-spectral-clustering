@@ -16,6 +16,6 @@ def test_sagbc_produces_one_label_per_sample() -> None:
 
 def test_sagbc_is_available_to_the_benchmark() -> None:
     _validate_algorithm_config("sagbc")
-    model = _create_model("sagbc", ExperimentConfig(), p1=None, p2=None, theta=0.0, n_clusters=2, seed=1, sagbc_sample_size=8)
+    model = _create_model("sagbc", ExperimentConfig(), p1=None, p2=None, theta=0.0, n_clusters=2, seed=1, sagbc_sample_size=8, sagbc_max_ball_size=3, sagbc_neighbor_count=4, sagbc_search_radius_scale=2.0)
     assert isinstance(model, SAGBC)
 

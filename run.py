@@ -131,7 +131,7 @@ GB_POJG_GBSC_RUN_FIELDS = (
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
 SAGBC_RUN_FIELDS = (
-    "algorithm", "dataset", "seed", "sample_size", "status", *METRICS,
+    "algorithm", "dataset", "seed", "sampling_ratio", "sample_size", "max_ball_size", "neighbor_count", "search_radius_scale", "status", *METRICS,
     "runtime_seconds", "prediction_path", "error_type", "error_message",
 )
 GBCT_RUN_FIELDS = ("algorithm", "dataset", "seed", "n_clusters", "status", *METRICS, "runtime_seconds", "prediction_path", "error_type", "error_message")
@@ -247,9 +247,17 @@ def _validate_algorithm_config(algorithm: str) -> None:
         if not 0 <= float(params["noise_density_ratio"]): raise ValueError("gbct: noise_density_ratio must be non-negative")
         return
     if algorithm == "sagbc":
-        sample_size = params["sample_size"]
-        if isinstance(sample_size, bool) or not isinstance(sample_size, int) or sample_size < 2:
-            raise ValueError("sagbc: sample_size must be an integer >= 2")
+        ratios = tuple(float(value) for value in params["sampling_ratio_values"])
+        neighbors = tuple(int(value) for value in params["neighbor_count_values"])
+        scales = tuple(float(value) for value in params["search_radius_scale_values"])
+        if not ratios or any(not math.isfinite(value) or not 0 < value <= 1 for value in ratios):
+            raise ValueError("sagbc: sampling_ratio_values must be finite values in (0, 1]")
+        if not neighbors or any(value < 1 for value in neighbors):
+            raise ValueError("sagbc: neighbor_count_values must contain positive integers")
+        if not scales or any(not math.isfinite(value) or value <= 0 for value in scales):
+            raise ValueError("sagbc: search_radius_scale_values must contain finite positive values")
+        if int(params["max_sample_pool"]) < 2:
+            raise ValueError("sagbc: max_sample_pool must be >= 2")
         return
     if algorithm == "gb_pojg_gbdpc":
         gammas = tuple(float(value) for value in params["gamma_values"])
@@ -772,6 +780,9 @@ def _create_model(
     mgagc_beta: float | None = None,
     mgagc_lambda_init: float | None = None,
     sagbc_sample_size: int | None = None,
+    sagbc_max_ball_size: int | None = None,
+    sagbc_neighbor_count: int | None = None,
+    sagbc_search_radius_scale: float | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
@@ -803,11 +814,14 @@ def _create_model(
     if algorithm == "gbct":
         return GBCT(GBCTConfig(n_clusters=n_clusters, noise_density_ratio=float(algorithm_config["noise_density_ratio"])))
     if algorithm == "sagbc":
-        if sagbc_sample_size is None:
-            raise ValueError("sagbc: resolved sample_size is required")
+        if sagbc_sample_size is None or sagbc_max_ball_size is None or sagbc_neighbor_count is None or sagbc_search_radius_scale is None:
+            raise ValueError("sagbc: resolved sample_size, max_ball_size, neighbor_count and search_radius_scale are required")
         return SAGBC(SAGBCConfig(
             sample_size=sagbc_sample_size,
             random_state=seed,
+            neighbor_count=sagbc_neighbor_count,
+            max_ball_size=sagbc_max_ball_size,
+            search_radius_scale=sagbc_search_radius_scale,
         ))
     if algorithm == "gbsc":
         if sigma is None:
@@ -1012,13 +1026,10 @@ def _algorithm_parameters(
         }
     if algorithm == "sagbc":
         return {
-            "anchor_sampling": "official random representative-point sampling; min(config.sample_size, n_samples)",
-            "granular_ball_generation": "official farthest-pair division until ball size <= 8",
-            "structure_graph": "official 5-nearest-anchor Gaussian affiliation and 2r shared-neighbor connection",
-            "sample_size": algorithm_config["sample_size"],
-            "neighbor_count": 5,
-            "max_ball_size": 8,
-            "search_radius_scale": 2.0,
+            "anchor_sampling": "paper t=floor(min(MAX_NUM,n_samples)*tau) random representative-point sampling",
+            "granular_ball_generation": "paper farthest-pair division until ball size <= ceil(sqrt(t))",
+            "structure_graph": "top-lambda nearest-anchor Gaussian affiliation and gamma*r shared-neighbor connection",
+            **algorithm_config,
         }
     if algorithm == "gbsc":
         return {
@@ -1824,38 +1835,13 @@ def _run_gbsc_grid(dataset: Dataset, config: ExperimentConfig, run_id: str) -> d
     return _summarize_gbsc(output_dir, config, sigma_values)
 
 
-def _summarize_sagbc(output_dir: Path, config: ExperimentConfig, sample_size: int) -> dict[str, object]:
-    rows = _read_csv(output_dir / "all_runs.csv")
-    success = [row for row in rows if row["status"] == "success"]
-    fields = (
-        "dataset", "sample_size", "success_runs",
-        *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")),
-        "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum",
-    )
-    best: dict[str, object] = {
-        "dataset": rows[0]["dataset"] if rows else "", "sample_size": sample_size,
-        "success_runs": len(success),
-    }
-    for metric in METRICS:
-        best[f"{metric}_mean"], best[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
-    runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan"))
-    best.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success))
-    _write_csv(output_dir / "grid_summary.csv", [best], fields)
-    best = {**best, "selection_metric": "not_applicable_single_source_configuration", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in success)}
-    _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
-    status_counts: dict[str, int] = defaultdict(int)
-    for row in rows:
-        status_counts[row["status"]] += 1
-    _write_json(output_dir / "experiment_summary.json", {
-        "dataset": best["dataset"], "algorithm": "sagbc", "planned_runs": len(config.seeds),
-        "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best,
-    })
-    return best
-
-
 def _run_sagbc(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
-    requested = int(_get_algorithm_config("sagbc")["sample_size"])
-    sample_size = min(requested, dataset.n_samples)
+    params = _get_algorithm_config("sagbc")
+    ratios = tuple(dict.fromkeys(float(value) for value in params["sampling_ratio_values"]))
+    neighbors = tuple(dict.fromkeys(int(value) for value in params["neighbor_count_values"]))
+    scales = tuple(dict.fromkeys(float(value) for value in params["search_radius_scale_values"]))
+    sample_pool = min(int(params["max_sample_pool"]), dataset.n_samples)
+    combinations = tuple((ratio, neighbor, scale, max(2, math.floor(sample_pool * ratio)), math.ceil(math.sqrt(max(2, math.floor(sample_pool * ratio))))) for ratio in ratios for neighbor in neighbors for scale in scales)
     output_dir = config.output_root / run_id / dataset.name / "sagbc"
     if output_dir.exists() and not config.resume:
         raise FileExistsError(f"Result directory already exists: {output_dir}")
@@ -1863,37 +1849,56 @@ def _run_sagbc(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[
     labels_dir, all_runs_path = output_dir / "labels", output_dir / "all_runs.csv"
     labels_dir.mkdir(exist_ok=True)
     previous = _read_csv(all_runs_path) if config.resume else []
-    completed = {int(row["seed"]) for row in previous}
+    completed = {(int(row["seed"]), row["sampling_ratio"], row["neighbor_count"], row["search_radius_scale"]) for row in previous}
     _write_json(output_dir / "experiment_config.json", {
         "algorithm": "sagbc", "dataset": dataset.name, "seeds": config.seeds,
-        "sample_size_requested": requested, "sample_size_used": sample_size,
-        "preprocessing": "none_official_source", "selection_rule": "not_applicable_single_source_configuration",
+        "sampling_ratio_values": ratios, "neighbor_count_values": neighbors, "search_radius_scale_values": scales,
+        "max_sample_pool": int(params["max_sample_pool"]), "preprocessing": "none_official_source",
+        "selection_rule": "maximize mean ACC across seeds",
         "algorithm_parameters": _algorithm_parameters("sagbc", config),
     })
+    rows = list(previous)
     with all_runs_path.open("a" if previous else "w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=SAGBC_RUN_FIELDS)
         if not previous:
             writer.writeheader()
-        for done, seed in enumerate(config.seeds, start=1):
-            if seed in completed:
-                continue
-            row: dict[str, object] = {field: "" for field in SAGBC_RUN_FIELDS}
-            row.update(algorithm="sagbc", dataset=dataset.name, seed=seed, sample_size=sample_size)
-            start = time.perf_counter()
-            try:
-                labels = _create_model("sagbc", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, sagbc_sample_size=sample_size).fit_predict(dataset.X.copy())
-                runtime = time.perf_counter() - start
-                prediction = labels_dir / f"seed_{seed}.npy"
-                np.save(prediction, labels)
-                row.update(status="success", runtime_seconds=runtime, prediction_path=prediction.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
-            except Exception as exc:
-                row.update(status="failed", runtime_seconds=time.perf_counter() - start, error_type=type(exc).__name__, error_message=str(exc))
-                (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-            writer.writerow(row)
-            stream.flush()
-            metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{done}/{len(config.seeds)}] sagbc {dataset.name} seed={seed} sample_size={sample_size} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
-    return _summarize_sagbc(output_dir, config, sample_size)
+        for seed in config.seeds:
+            for ratio, neighbor, scale, sample_size, max_ball_size in combinations:
+                ratio_text, scale_text = f"{ratio:.12g}", f"{scale:.12g}"
+                if (seed, ratio_text, str(neighbor), scale_text) in completed:
+                    continue
+                row: dict[str, object] = {field: "" for field in SAGBC_RUN_FIELDS}
+                row.update(algorithm="sagbc", dataset=dataset.name, seed=seed, sampling_ratio=ratio_text, sample_size=sample_size, max_ball_size=max_ball_size, neighbor_count=neighbor, search_radius_scale=scale_text)
+                start = time.perf_counter()
+                try:
+                    labels = _create_model("sagbc", config, p1=None, p2=None, theta=0.0, n_clusters=dataset.n_classes, seed=seed, sagbc_sample_size=sample_size, sagbc_max_ball_size=max_ball_size, sagbc_neighbor_count=neighbor, sagbc_search_radius_scale=scale).fit_predict(dataset.X.copy())
+                    prediction = labels_dir / f"seed_{seed}_tau_{ratio_text.replace('.', 'p')}_lambda_{neighbor}_gamma_{scale_text.replace('.', 'p')}.npy"
+                    np.save(prediction, labels)
+                    row.update(status="success", runtime_seconds=time.perf_counter() - start, prediction_path=prediction.relative_to(output_dir).as_posix(), **evaluate_clustering(dataset.y, labels, nmi_average_method=config.nmi_average_method).as_dict())
+                except Exception as exc:
+                    row.update(status="failed", runtime_seconds=time.perf_counter() - start, error_type=type(exc).__name__, error_message=str(exc)); (output_dir / "last_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+                writer.writerow(row); stream.flush(); rows.append({key: str(value) for key, value in row.items()})
+                metric_text = f"NMI={float(row['nmi']):.4f} ACC={float(row['acc']):.4f} F-measure={float(row['f_measure']):.4f}" if row["status"] == "success" else "NMI=N/A ACC=N/A F-measure=N/A"
+                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [{len(rows)}/{len(config.seeds) * len(combinations)}] sagbc {dataset.name} seed={seed} tau={ratio_text} lambda={neighbor} gamma={scale_text} {row['status']} runtime={float(row['runtime_seconds']):.3f}s {metric_text}", flush=True)
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["status"] == "success": grouped[(row["sampling_ratio"], row["neighbor_count"], row["search_radius_scale"])].append(row)
+    fields = ("dataset", "algorithm", "sampling_ratio", "sample_size", "max_ball_size", "neighbor_count", "search_radius_scale", "success_runs", *(name for metric in METRICS for name in (f"{metric}_mean", f"{metric}_std")), "runtime_seconds_mean", "runtime_seconds_std", "runtime_seconds_sum")
+    summaries: list[dict[str, object]] = []
+    for ratio, neighbor, scale, sample_size, max_ball_size in combinations:
+        ratio_text, scale_text = f"{ratio:.12g}", f"{scale:.12g}"; success = grouped.get((ratio_text, str(neighbor), scale_text), [])
+        item: dict[str, object] = {"dataset": dataset.name, "algorithm": "sagbc", "sampling_ratio": ratio_text, "sample_size": sample_size, "max_ball_size": max_ball_size, "neighbor_count": neighbor, "search_radius_scale": scale_text, "success_runs": len(success)}
+        for metric in METRICS: item[f"{metric}_mean"], item[f"{metric}_std"] = _mean_std(success, metric) if success else (float("nan"), float("nan"))
+        runtime_mean, runtime_std = _mean_std(success, "runtime_seconds") if success else (float("nan"), float("nan")); item.update(runtime_seconds_mean=runtime_mean, runtime_seconds_std=runtime_std, runtime_seconds_sum=sum(float(row["runtime_seconds"]) for row in success)); summaries.append(item)
+    _write_csv(output_dir / "grid_summary.csv", summaries, fields)
+    candidates = [item for item in summaries if int(item["success_runs"]) == len(config.seeds) and math.isfinite(float(item["acc_mean"]))]
+    if not candidates: raise RuntimeError("No SAGBC parameter combination completed every seed")
+    best = min(candidates, key=lambda item: (-float(item["acc_mean"]), -float(item["nmi_mean"]), -float(item["f_measure_mean"]), float(item["runtime_seconds_mean"])))
+    best = {**best, "selection_metric": "acc_mean", "grid_runtime_seconds": sum(float(row["runtime_seconds"]) for row in rows if row["status"] == "success")}; _write_csv(output_dir / "best_parameter_combination.csv", [best], (*fields, "selection_metric", "grid_runtime_seconds"))
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows: status_counts[row["status"]] += 1
+    _write_json(output_dir / "experiment_summary.json", {"dataset": dataset.name, "algorithm": "sagbc", "planned_runs": len(config.seeds) * len(combinations), "completed_rows": len(rows), "status_counts": dict(status_counts), "best_parameter_combination": best})
+    return best
 
 
 def _run_gbct(dataset: Dataset, config: ExperimentConfig, run_id: str) -> dict[str, object]:
@@ -2416,7 +2421,7 @@ def main() -> int:
                 if algorithm == "gb_pojg_gbsc"
                 else {"sigma": float(best["sigma"])}
                 if algorithm == "gbsc"
-                else {"sample_size": int(best["sample_size"])}
+                else {"sampling_ratio": float(best["sampling_ratio"]), "sample_size": int(best["sample_size"]), "max_ball_size": int(best["max_ball_size"]), "neighbor_count": int(best["neighbor_count"]), "search_radius_scale": float(best["search_radius_scale"]), "max_sample_pool": int(algorithm_config["max_sample_pool"])}
                 if algorithm == "sagbc"
                 else {"n_clusters": int(best["n_clusters"])}
                 if algorithm == "gbct"

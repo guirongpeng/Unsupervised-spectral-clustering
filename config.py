@@ -25,12 +25,14 @@ DATA_ROOT = ROOT / "data"
 STANDARDIZED_DATA_ROOT = DATA_ROOT / "standardized"
 
 # 每个算法独立维护实验参数；即使当前取值相同，也不要相互复用。
+# Pseudo-label-Based_Unsupervised_Granular-Ball_Division_and_Fast_Spectral_Clustering_for_High-Dimensional_Data.pdf
 PLGB_FSC_PARAMS = {
     # 组件2：全局保留属性数。counts 有效范围 [2, d]；ratios 按 ceil(d * ratio) 换算，范围 (0, 1]。
+    ## 原论文针对每个数据集指定p1、在官方源码指定0.75d
     "p1_counts": (),
     "p1_ratios": (0.75,),                                   # 默认比例0.75
 
-    "p2_values": tuple(range(4, 56, 4)),          # 默认属性区间(50, 201, 10)
+    "p2_values": tuple(range(4, 201, 4)),          # 默认属性区间(50, 201, 10)
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
                                                             # 默认阈值(70, 100, 5):(0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
 }
@@ -108,7 +110,7 @@ MY_V3_PARAMS = {
     # PDMF 边相似度中原始相似度的权重 lambda。
     "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
     # 属性冗余惩罚 beta；beta=0 可作为 V1 风格消融。
-    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5),
+    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5,0.7),
     # V3 默认自适应融合熵重要性和图重要性；图结构选项固定开启。
     "fusion_alpha_mode": "adaptive",
     "mutual_knn": True,
@@ -135,6 +137,8 @@ MY_V4_PARAMS = {
     "pdmf_epsilon": 1e-8,
 }
 
+# Generation of Granular-Balls for Clustering Based on the Principle of Justifiable Granularity.pdf
+# 2个算法：下
 GB_POJG_GBDPC_PARAMS = {
     # GB-POJG 合理粒度质量 BQ(G)=NumInBall*exp(-gamma*AveRadius) 中的 gamma，范围 [0,+inf)。
     # 原论文网格：{0,0.05,...,1,2,...,10}，共 30 个候选值。
@@ -148,7 +152,8 @@ GB_POJG_GBDPC_PARAMS = {
     # "delta_values": tuple(round(i / 10, 1) for i in range(1, 11)),  # 原文建议[0.4,1.0]，故去掉该范围值
 
 }
-
+# Generation of Granular-Balls for Clustering Based on the Principle of Justifiable Granularity.pdf
+# 2个算法：上
 GB_POJG_GBSC_PARAMS = {
     # GB-POJG 粒球质量 BQ(G)=NumInBall*exp(-gamma*AveRadius) 中的 gamma；官方 main.m 固定为 2。
     "gamma_values": (*tuple(round(i * 0.05, 2) for i in range(21)),),
@@ -161,31 +166,43 @@ GB_POJG_GBSC_PARAMS = {
     ),
 }
 
+# An Efficient Spectral Clustering Algorithm Based on Granular-Ball.pdf
 GBSC_PARAMS = {
     # 粒球边界距离高斯相似度 exp(-d_boundary^2/(2*sigma^2)) 的带宽。
     # 官方 UCI 可执行源码固定使用 sigma=1.0；论文 UCI 表中记为 0.1。
     "sigma_values": (1.0,),
 }
 
+# Structure-aware granular ball clustering.pdf
 SAGBC_PARAMS = {
-    # 官方源码 CC 实验固定抽取 5000 个代表样本；小数据集使用全部样本 min(5000, n)。
-    "sample_size": 5000,
+    # 论文 t=floor(min(20000,n)*tau) 中的采样比例 tau；论文敏感性实验为 0.1--0.4。
+    "sampling_ratio_values": (0.1, 0.2, 0.3, 0.4),  # τ
+    # 论文 soft affiliation graph 中每个样本保留的 top-lambda 粒球；论文测试 {4,5,6}。
+    "neighbor_count_values": (4, 5, 6), # λ
+    # 论文搜索半径 r_bar=gamma*r 的 gamma；论文给出范围 [1.5,3.0]，此处以 0.1 离散化。
+    "search_radius_scale_values": tuple(round(value / 10, 1) for value in range(15, 31)),# γ
+    # 论文的 MAX_NUM=20000，不参与网格搜索。
+    "max_sample_pool": 20_000,
 }
 
+# GBCT Efficient and Adaptive Clustering via Granular-Ball Computing for Complex Data.pdf
 GBCT_PARAMS = {
     # 官方源码固定：初始 sqrt(n) 粗划分、细分 2-Means、噪声密度阈值 0.2；不做网格搜索。
     "noise_density_ratio": 0.2,
 }
 
+# MGNR A Multi-Granularity Neighbor Relationship and Its Application in KNN Classification and Clustering Methods.pdf
+# 4个算法：dpeak_nard、dbscan_nard、dadc_nard、hcdc_nard
 MGNR_NARD_PARAMS = {
     # GB 半径归一化阈值：球半径大于 factor*max(mean_radius, median_radius) 时继续划分；官方源码固定 2。
     "radius_detection_factor": 2.0,
     # 仅 DBSCAN-NARD：核心球条件 NARD >= factor*mean(NARD)；官方源码固定 0.4。论文固定为0.25
-    "dbscan_core_factor": 0.4,
+    "dbscan_core_factor": 0.25,
     # 仅 HCDC-NARD：删除规模小于 fraction*球数的簇；官方源码固定 0.01。
     "hcdc_small_cluster_fraction": 0.01,
 }
 
+# M3W Multistep Three-Way Clustering.pdf
 M3W_PARAMS = {
     # 论文实验网格：反向 kNN 邻域数 k ∈ {5,...,30}。
     "k_values": tuple(range(5, 31)),
@@ -210,6 +227,7 @@ GB_DP_PARAMS = {
     "n_init": 1,
 }
 
+# GB-DBSCAN A fast granular-ball based DBSCAN clustering algorithm.pdf
 GB_DBSCAN_PARAMS = {
     # 论文 Section 4.1：Ratio 的范围为 [0, 1]、步长为 0.01。0 会导致没有 Core-GB，故实际可运行网格为 {0.01,...,1.00}。
     "ratio_values": tuple(value / 100 for value in range(1, 101)),
@@ -220,6 +238,7 @@ GB_DBSCAN_PARAMS = {
     "leaf_size": 30,
 }
 
+# Multi-granularity Granular-ball Anchor Graph Clustering with.pdf
 MGAGC_PARAMS = {
     # 官方 Notebook：k 从锚点数 m 自适应生成 range(1, floor(sqrt(m)), max(floor(sqrt(m)/10), 2))。
     "k_step_divisor": 10,
@@ -233,21 +252,26 @@ MGAGC_PARAMS = {
     "tol": 1e-4,
 }
 
+# Anovelhierarchicalclusteringapproachbasedongranular-ballcomputing.pdf
+# 2个算法：FI-GBHC、PB-GBHC
 FI_GBHC_PARAMS = {
     # 论文 Table 3、Table 7：FI-GBHC 的 ratio 搜索网格。
     "ratio_values": (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05),
 }
-
+# Anovelhierarchicalclusteringapproachbasedongranular-ballcomputing.pdf
+# 2个算法：FI-GBHC、PB-GBHC
 PB_GBHC_PARAMS = {
     # 论文 Table 3、Table 7：PB-GBHC 的 q 搜索网格。
     "q_values": (1, 5, 10, 20, 25, 30),
 }
 
+# EGBDPM Efficient granular ball density peaks clustering for manifold data.pdf
 EGBDPM_PARAMS = {
     # 论文 Section 4.1：密度计算和球面测地距离共用的近邻数 k ∈ {2, 3, ..., 10}。
     "k_neighbors_values": tuple(range(2, 11)),
 }
 
+# An Anchor Graph-based Clustering Framework for Imbalanced Large-scale.pdf
 AGC_ILD_PARAMS = {
     # 论文 Table 3：锚点数 m ∈ {2^5, 2^6, ..., 2^12}；小数据集会自动截断为不超过样本数的最大 2 的幂。
     "n_anchors_values": tuple(2**power for power in range(5, 13)),
@@ -268,8 +292,18 @@ class DatasetConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    algorithms: tuple[str, ...] = ("my_v2",)  # 可选: fi_gbhc, pb_gbhc（及已有算法）
-    datasets: tuple[str, ...] = ("SuCancer",)#("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
+    algorithms: tuple[str, ...] = (
+        "plgb_fsc", "my_v3", "gb_pojg_gbdpc", "gb_pojg_gbsc",
+        "gbsc", "sagbc", "gbct",
+        "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard",
+        "m3w", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc",
+        "egbdpm", "agc_ild",
+    )
+    datasets: tuple[str, ...] = (
+        "Wine", "Glass", "Seeds", "Ionosphere", "WDBC", "Iris",
+        "Ecoli", "Libras", "Sonar", "ORL", "Yale", "warpPIE10P", "GLIOMA",
+    )
+                                #("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
     seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
