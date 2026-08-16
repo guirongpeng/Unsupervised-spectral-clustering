@@ -994,6 +994,28 @@ def _algorithm_parameters(
             "k_rule": "official adaptive range derived from the generated anchor count",
             **algorithm_config,
         }
+    if algorithm == "egbdpm":
+        return {
+            "granular_ball_generation": "paper adaptive granular-ball generation with IQR refinement",
+            "density_peaks": "paper k-neighbor granular-ball density and spherical geodesic distance",
+            **algorithm_config,
+        }
+    if algorithm == "fi_gbhc":
+        return {
+            "hierarchical_clustering": "paper fixed-increment granular-ball hierarchical clustering",
+            **algorithm_config,
+        }
+    if algorithm == "pb_gbhc":
+        return {
+            "hierarchical_clustering": "paper percentile-based granular-ball hierarchical clustering",
+            **algorithm_config,
+        }
+    if algorithm == "gbct":
+        return {
+            "granular_ball_generation": "official adaptive coarse-to-fine granular-ball division",
+            "clustering": "official granular-ball connectivity-tree clustering with noise filtering",
+            **algorithm_config,
+        }
     if algorithm == "gb_dbscan":
         return {
             "granular_ball_generation": "official first-unvisited-sample KNN balls, K=ceil(sqrt(n))*0.3",
