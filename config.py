@@ -353,6 +353,10 @@ DATASETS = {
         "LUNG",
         "CARCINOM",
         "LEUKEMIA",
+        "MuskV1",
+        "Semeion",
+        "Parkinsons",
+        "LSVT",
     )
 }
 
