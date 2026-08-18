@@ -302,6 +302,7 @@ class ExperimentConfig:
     datasets: tuple[str, ...] = (
         "Wine", "Glass", "Seeds", "Ionosphere", "WDBC", "Iris",
         "Ecoli", "Libras", "Sonar", "ORL", "Yale", "warpPIE10P", "GLIOMA",
+        "ALLAML","LEUKEMIA", "LUNG", "CARCINOM", "CLL_SUB_111",  "SuCancer","TOX_171", # 0818
     )
                                 #("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
                                 # "PenDigits","Letter","Covertype")    # 指定运行数据集名
@@ -342,6 +343,16 @@ DATASETS = {
         "Sonar",
         "Segment",
         "Vehicle",
+        "BalanceScale",
+        "Banknote",
+        "Haberman",
+        "Yeast",
+        "Landsat",
+        "RiceCammeoOsmancik",
+        "CLL_SUB_111",
+        "LUNG",
+        "CARCINOM",
+        "LEUKEMIA",
     )
 }
 
