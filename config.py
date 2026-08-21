@@ -331,6 +331,8 @@ DATASETS = {
         "PenDigits",
         "Letter",
         "Covertype",
+        "MNIST",
+        "Balanced",
         "Wine",
         "Glass",
         "Seeds",
