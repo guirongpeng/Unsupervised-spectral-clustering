@@ -35,6 +35,8 @@ class MYV3Config:
     tcut_kmeans_max_iter: int = 100
     tcut_kmeans_n_init: int = 3
     keep_matlab_split_rule: bool = True
+    compute_device: str = "cpu"
+    gpu_chunk_size: int = 4096
 
     def __post_init__(self) -> None:
         if isinstance(self.p1, bool) or not isinstance(self.p1, int):
@@ -85,6 +87,14 @@ class MYV3Config:
             raise ValueError("tcut_kmeans_n_init must be at least 1")
         if not isinstance(self.keep_matlab_split_rule, bool):
             raise TypeError("keep_matlab_split_rule must be a bool")
+        if self.compute_device not in {"cpu", "gpu", "auto"}:
+            raise ValueError("compute_device must be 'cpu', 'gpu', or 'auto'")
+        if (
+            isinstance(self.gpu_chunk_size, bool)
+            or not isinstance(self.gpu_chunk_size, int)
+            or self.gpu_chunk_size < 1
+        ):
+            raise ValueError("gpu_chunk_size must be an integer >= 1")
 
     @staticmethod
     def _validate_neighbor_setting(name: str, value: int | float) -> None:

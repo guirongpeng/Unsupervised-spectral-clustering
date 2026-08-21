@@ -13,6 +13,7 @@ from scipy import sparse
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors
 
+from .gpu import resolve_cupy
 from .matlab_kmeans import litekmeans_like
 
 
@@ -30,6 +31,8 @@ def build_sample_anchor_graph(
     X: np.ndarray,
     anchors: np.ndarray,
     k_neighbors: int = 5,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> tuple[sparse.csr_matrix, float]:
     """构建样本-锚点稀疏二分图。
 
@@ -45,10 +48,14 @@ def build_sample_anchor_graph(
         raise ValueError("At least one anchor is required")
     k = max(1, min(int(k_neighbors), n_anchors))
 
-    # 查找每个样本最近的 k 个锚点，等价于 MATLAB knnsearch(centerDist, fea, 'k', K)。
-    neighbors = NearestNeighbors(n_neighbors=k, metric="euclidean")
-    neighbors.fit(anchors)
-    distances, indices = neighbors.kneighbors(X, return_distance=True)
+    cp = resolve_cupy(compute_device)
+    if cp is None:
+        # 查找每个样本最近的 k 个锚点，等价于 MATLAB knnsearch(centerDist, fea, 'k', K)。
+        neighbors = NearestNeighbors(n_neighbors=k, metric="euclidean")
+        neighbors.fit(anchors)
+        distances, indices = neighbors.kneighbors(X, return_distance=True)
+    else:
+        distances, indices = _gpu_anchor_neighbors(X, anchors, k, gpu_chunk_size, cp)
 
     sigma = float(np.mean(distances))
     if sigma <= 0 or not np.isfinite(sigma):
@@ -60,6 +67,32 @@ def build_sample_anchor_graph(
     rows = np.repeat(np.arange(n_samples), k)
     graph = sparse.csr_matrix((weights.reshape(-1), (rows, indices.reshape(-1))), shape=(n_samples, n_anchors))
     return graph, sigma
+
+
+def _gpu_anchor_neighbors(
+    X: np.ndarray, anchors: np.ndarray, k: int, chunk_size: int, cp: object
+) -> tuple[np.ndarray, np.ndarray]:
+    """GPU, chunked exact top-k sample-anchor Euclidean distances."""
+
+    anchors_gpu = cp.asarray(anchors, dtype=cp.float64)
+    anchor_norms = cp.sum(anchors_gpu * anchors_gpu, axis=1)
+    distance_chunks: list[np.ndarray] = []
+    index_chunks: list[np.ndarray] = []
+    for start in range(0, X.shape[0], chunk_size):
+        values = cp.asarray(X[start : start + chunk_size], dtype=cp.float64)
+        squared = (
+            cp.sum(values * values, axis=1)[:, None]
+            + anchor_norms[None, :]
+            - 2.0 * values @ anchors_gpu.T
+        )
+        squared = cp.maximum(squared, 0.0)
+        unordered = cp.argpartition(squared, kth=k - 1, axis=1)[:, :k]
+        nearest_squared = cp.take_along_axis(squared, unordered, axis=1)
+        order = cp.argsort(nearest_squared, axis=1)
+        indices = cp.take_along_axis(unordered, order, axis=1)
+        distance_chunks.append(cp.asnumpy(cp.sqrt(cp.take_along_axis(nearest_squared, order, axis=1))))
+        index_chunks.append(cp.asnumpy(indices))
+    return np.vstack(distance_chunks), np.vstack(index_chunks)
 
 
 def transfer_cut_embedding(B: sparse.csr_matrix, n_clusters: int) -> np.ndarray:
@@ -111,10 +144,18 @@ def run_transfer_cut(
     kmeans_n_init: int | None = None,
     seed: int | None = None,
     clusterer: str = "sklearn",
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> TransferCutResult:
     """完整执行二分图构建、谱嵌入和最终聚类。"""
 
-    graph, sigma = build_sample_anchor_graph(X, anchors, k_neighbors=k_neighbors)
+    graph, sigma = build_sample_anchor_graph(
+        X,
+        anchors,
+        k_neighbors=k_neighbors,
+        compute_device=compute_device,
+        gpu_chunk_size=gpu_chunk_size,
+    )
     embedding = transfer_cut_embedding(graph, n_clusters)
     if clusterer == "litekmeans":
         # PLGB-FSC 源码兼容路径：使用 MATLAB-like KMeans。

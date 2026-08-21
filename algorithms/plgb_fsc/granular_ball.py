@@ -47,6 +47,7 @@ def split_ball_with_2means(
     p2: int,
     max_iter: int = 3,
     seed: int | None = None,
+    compute_device: str = "cpu",
 ) -> tuple[GranularBall, GranularBall]:
     """用局部特征选择 + 2-Means 将一个粒球二分。"""
 
@@ -55,7 +56,9 @@ def split_ball_with_2means(
         return ball, GranularBall(ball.X[:0].copy(), ball.pseudo_labels[:0].copy())
 
     # 先在粒球内部选择 p2 个最适合拆分的局部特征，再做 2-Means。
-    split_X, _, _ = select_local_features_by_discernibility(ball.X, p2)
+    split_X, _, _ = select_local_features_by_discernibility(
+        ball.X, p2, compute_device=compute_device
+    )
     labels = two_means_labels(split_X, max_iter=max_iter, seed=seed)
     first = labels == 0
     second = labels == 1
@@ -97,6 +100,7 @@ def split_granular_balls(
     split_kmeans_max_iter: int = 3,
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
+    compute_device: str = "cpu",
 ) -> list[GranularBall]:
     """对当前粒球列表做一轮扫描拆分。"""
 
@@ -107,7 +111,9 @@ def split_granular_balls(
         else:
             # 给不同粒球拆分使用不同 seed，减少完全相同初始化。
             split_seed = None if seed is None else seed + index
-            ball_1, ball_2 = split_ball_with_2means(ball, p2, split_kmeans_max_iter, split_seed)
+            ball_1, ball_2 = split_ball_with_2means(
+                ball, p2, split_kmeans_max_iter, split_seed, compute_device
+            )
             if ball_2.size == 0:
                 new_balls.append(ball_1)
             else:
@@ -124,6 +130,7 @@ def generate_granular_balls(
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
     max_rounds: int = 10_000,
+    compute_device: str = "cpu",
 ) -> list[GranularBall]:
     """从单个大粒球开始，迭代拆分直到一轮后粒球数量不再变化。"""
 
@@ -137,6 +144,7 @@ def generate_granular_balls(
             split_kmeans_max_iter=split_kmeans_max_iter,
             seed=seed,
             keep_matlab_split_rule=keep_matlab_split_rule,
+            compute_device=compute_device,
         )
         if len(balls) == old_count:
             break
@@ -165,6 +173,7 @@ def generate_anchors(
     split_kmeans_max_iter: int = 3,
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
+    compute_device: str = "cpu",
 ) -> tuple[np.ndarray, list[GranularBall]]:
     """生成最终锚点矩阵和粒球列表。"""
 
@@ -176,5 +185,6 @@ def generate_anchors(
         split_kmeans_max_iter=split_kmeans_max_iter,
         seed=seed,
         keep_matlab_split_rule=keep_matlab_split_rule,
+        compute_device=compute_device,
     )
     return anchors_from_balls(balls), balls

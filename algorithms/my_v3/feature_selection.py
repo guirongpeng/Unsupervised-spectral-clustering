@@ -17,6 +17,7 @@ from numpy.polynomial.legendre import leggauss
 from scipy.special import ndtr
 from sklearn.neighbors import NearestNeighbors
 
+from .common.gpu import resolve_cupy
 from .common.preprocessing import minmax_scale_like_matlab
 
 
@@ -386,6 +387,7 @@ def _graph_attribute_scores_from_components(
     block_size: int = 128,
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    compute_device: str = "cpu",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return leave-one-attribute-out sparse-graph importance scores."""
 
@@ -409,6 +411,22 @@ def _graph_attribute_scores_from_components(
         )
     else:
         edge_weights = None
+    cp = resolve_cupy(compute_device)
+    if cp is not None:
+        return _graph_attribute_scores_gpu(
+            X,
+            active,
+            spread_left,
+            spread_right,
+            clarity,
+            edges,
+            similarity_lambda,
+            epsilon,
+            block_size,
+            edge_weights,
+            scores,
+            cp,
+        )
     full_graph = np.zeros(edges.shape[0], dtype=float)
     for start in range(0, active.size, block_size):
         block = active[start : start + block_size]
@@ -446,6 +464,58 @@ def _graph_attribute_scores_from_components(
     return scores, edges
 
 
+def _graph_attribute_scores_gpu(
+    X: np.ndarray,
+    active: np.ndarray,
+    spread_left: np.ndarray,
+    spread_right: np.ndarray,
+    clarity: np.ndarray,
+    edges: np.ndarray,
+    similarity_lambda: float,
+    epsilon: float,
+    block_size: int,
+    edge_weights: np.ndarray | None,
+    scores: np.ndarray,
+    cp: object,
+) -> tuple[np.ndarray, np.ndarray]:
+    """GPU evaluation of the unchanged sparse-graph importance formula."""
+
+    first = cp.asarray(edges[:, 0], dtype=cp.int64)
+    second = cp.asarray(edges[:, 1], dtype=cp.int64)
+    values = cp.asarray(X, dtype=cp.float64)
+    left = cp.asarray(spread_left, dtype=cp.float64)
+    right = cp.asarray(spread_right, dtype=cp.float64)
+    clarity_values = cp.asarray(clarity, dtype=cp.float64)
+    weights = None if edge_weights is None else cp.asarray(edge_weights, dtype=cp.float64)
+    grid, entropy = _shape_entropy_lookup(2.0, _SIMILARITY_SHAPE_GRID_SIZE)
+    entropy_grid = cp.asarray(entropy, dtype=cp.float64)
+    grid_gpu = cp.asarray(grid, dtype=cp.float64)
+
+    def similarities(block: np.ndarray) -> object:
+        features = cp.asarray(block, dtype=cp.int64)
+        core = cp.exp(-cp.abs(values[first[:, None], features] - values[second[:, None], features]))
+        differences = clarity_values[first[:, None], features] - clarity_values[second[:, None], features]
+        shape = cp.interp(cp.clip(differences, -2.0, 2.0).ravel(), grid_gpu, entropy_grid).reshape(differences.shape)
+        left_similarity = cp.exp(-cp.abs(left[first[:, None], features] - left[second[:, None], features])) * shape
+        right_similarity = cp.exp(-cp.abs(right[first[:, None], features] - right[second[:, None], features])) * shape
+        result = similarity_lambda * core + (1.0 - similarity_lambda) * (left_similarity + right_similarity) / (2.0 * _H0)
+        return result if weights is None else result * weights[:, None]
+
+    full_graph = cp.zeros(edges.shape[0], dtype=cp.float64)
+    for start in range(0, active.size, block_size):
+        full_graph += cp.sum(similarities(active[start : start + block_size]), axis=1)
+    full_graph /= active.size
+    denominator = cp.sum(full_graph * full_graph) + epsilon
+    removal_scale = float((active.size - 1) ** 2)
+    for start in range(0, active.size, block_size):
+        block = active[start : start + block_size]
+        differences = similarities(block) - full_graph[:, None]
+        scores[block] = cp.asnumpy(
+            cp.sum(differences * differences, axis=0) / (removal_scale * denominator)
+        )
+    return scores, edges
+
+
 def gaussian_pdmf_graph_attribute_scores(
     X: np.ndarray,
     neighbors: int | float = 5,
@@ -454,6 +524,7 @@ def gaussian_pdmf_graph_attribute_scores(
     similarity_lambda: float = 0.5,
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    compute_device: str = "cpu",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute MY-V3 sparse-graph importance and its mutual-KNN edges."""
 
@@ -475,6 +546,7 @@ def gaussian_pdmf_graph_attribute_scores(
         epsilon,
         mutual_knn=mutual_knn,
         self_tuning_graph=self_tuning_graph,
+        compute_device=compute_device,
     )
 
 
@@ -601,6 +673,8 @@ def select_local_features_by_gaussian_pdmf_graph(
     fusion_alpha_mode: str = "adaptive",
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Select local attributes using adaptive entropy/graph fusion and redundancy control."""
 
@@ -643,6 +717,7 @@ def select_local_features_by_gaussian_pdmf_graph(
             epsilon,
             mutual_knn=mutual_knn,
             self_tuning_graph=self_tuning_graph,
+            compute_device=compute_device,
         )
         entropy_ranks = _normalized_descending_ranks(entropy_scores, single_entropies)
         graph_ranks = _normalized_descending_ranks(graph_scores)

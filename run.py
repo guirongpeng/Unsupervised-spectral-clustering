@@ -339,6 +339,11 @@ def _validate_algorithm_config(algorithm: str) -> None:
             raise ValueError("my_v3: mutual_knn must be boolean")
         if not isinstance(params["self_tuning_graph"], bool):
             raise ValueError("my_v3: self_tuning_graph must be boolean")
+        if params["compute_device"] not in {"cpu", "gpu", "auto"}:
+            raise ValueError("my_v3: compute_device must be cpu, gpu, or auto")
+        chunk_size = params["gpu_chunk_size"]
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size < 1:
+            raise ValueError("my_v3: gpu_chunk_size must be an integer >= 1")
 
 
 def _validate_count_ratio_options(
@@ -847,7 +852,13 @@ def _create_model(
         raise ValueError(f"{algorithm}: p1 and p2 are required")
     if algorithm == "plgb_fsc":
         return PLGBFSC(
-            PLGBFSCConfig(p1=p1, p2=p2, purity=theta),
+            PLGBFSCConfig(
+                p1=p1,
+                p2=p2,
+                purity=theta,
+                compute_device=str(algorithm_config["compute_device"]),
+                gpu_chunk_size=int(algorithm_config["gpu_chunk_size"]),
+            ),
             n_clusters=n_clusters,
             random_state=seed,
             precomputed_pseudo_labels=precomputed_pseudo_labels,
@@ -942,6 +953,8 @@ def _create_model(
                 fusion_alpha_mode=str(algorithm_config["fusion_alpha_mode"]),
                 mutual_knn=bool(algorithm_config["mutual_knn"]),
                 self_tuning_graph=bool(algorithm_config["self_tuning_graph"]),
+                compute_device=str(algorithm_config["compute_device"]),
+                gpu_chunk_size=int(algorithm_config["gpu_chunk_size"]),
             ),
             n_clusters=n_clusters,
             random_state=seed,
@@ -1080,6 +1093,8 @@ def _algorithm_parameters(
         return {
             "global_selection": "source-compatible pseudo-label mutual information",
             "local_selection": "source discernibility score",
+            "compute_device": algorithm_config["compute_device"],
+            "gpu_chunk_size": algorithm_config["gpu_chunk_size"],
         }
     if algorithm == "my_v0":
         return {
@@ -1141,6 +1156,8 @@ def _algorithm_parameters(
             "fusion_alpha_mode": algorithm_config["fusion_alpha_mode"],
             "mutual_knn": algorithm_config["mutual_knn"],
             "self_tuning_graph": algorithm_config["self_tuning_graph"],
+            "compute_device": algorithm_config["compute_device"],
+            "gpu_chunk_size": algorithm_config["gpu_chunk_size"],
         }
     if algorithm == "my_v4":
         return {

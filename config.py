@@ -35,6 +35,10 @@ PLGB_FSC_PARAMS = {
     "p2_values": tuple(range(4, 201, 4)),          # 默认属性区间(50, 201, 10)
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
                                                             # 默认阈值(70, 100, 5):(0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
+    # 仅 PLGB-FSC 数值后端；auto 在 CUDA/CuPy 可用时启用 GPU，否则保持 CPU 路径。
+    "compute_device": "auto",
+    # GPU 样本-锚点距离、加权 K-Means 的分块样本数；只影响显存占用，不改变公式。
+    "gpu_chunk_size": 4096,
 }
 
 MY_V0_PARAMS = {
@@ -116,6 +120,9 @@ MY_V3_PARAMS = {
     "mutual_knn": True,
     "self_tuning_graph": True,
     "pdmf_epsilon": 1e-8,
+    # 可选 GPU 数值后端；auto 在无可用 CuPy/CUDA 时保持 CPU 路径。
+    "compute_device": "auto",
+    "gpu_chunk_size": 4096,
 }
 
 MY_V4_PARAMS = {
@@ -365,20 +372,6 @@ DATASETS = {
 # 当前先验证 SuCancer，完整遍历参数网格并运行 3 个 seed。
 EXPERIMENT = ExperimentConfig()
 
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_COIL20.log 2>&1" -WindowStyle Hidden
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_ORL.log 2>&1" -WindowStyle Hidden
-
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_Yale.log 2>&1" -WindowStyle Hidden
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_warpPIE10P.log 2>&1" -WindowStyle Hidden
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_GLIOMA.log 2>&1" -WindowStyle Hidden
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_ALLAML.log 2>&1" -WindowStyle Hidden
-
-# Start-Process -FilePath "cmd.exe" -ArgumentList "/c ..\python\.venv\Scripts\python.exe .\run.py > only_plgb_fsc_with_SuCancer.log 2>&1" -WindowStyle Hidden
-
-
-# Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like "*only_plgb_fsc_with_SuCancer.log*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+# 让程序只使用物理 GPU 2。在程序内部，它会被映射为逻辑 GPU 0
+# CUDA_VISIBLE_DEVICES=2 nohup python run.py > task_gpu2.log 2>&1 &
+# CUDA_VISIBLE_DEVICES=5 nohup python run.py > task_gpu5.log 2>&1 &

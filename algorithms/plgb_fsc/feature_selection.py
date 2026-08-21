@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .common.gpu import resolve_cupy
 from .common.preprocessing import minmax_scale_like_matlab
 
 
@@ -85,6 +86,7 @@ def select_global_features_by_pseudo_label(
 def select_local_features_by_discernibility(
     X: np.ndarray,
     p2: int,
+    compute_device: str = "cpu",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply the released local discernibility score before 2-Means."""
 
@@ -94,6 +96,9 @@ def select_local_features_by_discernibility(
             "Cannot select local features from an empty feature matrix"
         )
     p2 = max(1, min(int(p2), X.shape[1]))
+    cp = resolve_cupy(compute_device)
+    if cp is not None:
+        return _select_local_features_gpu(X, p2, cp)
 
     # MATLAB std uses the sample standard deviation by default.
     ddof = 1 if X.shape[0] > 1 else 0
@@ -129,3 +134,33 @@ def select_local_features_by_discernibility(
     indices = np.argsort(scores)[::-1][:p2]
     selected = minmax_scale_like_matlab(X[:, indices])
     return selected, indices, scores
+
+
+def _select_local_features_gpu(
+    X: np.ndarray, p2: int, cp: object
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """GPU equivalent of the source discernibility ranking."""
+
+    values = cp.asarray(X, dtype=cp.float64)
+    ddof = 1 if X.shape[0] > 1 else 0
+    stds = cp.std(values, axis=0, ddof=ddof)
+    if X.shape[0] < 2 or X.shape[1] == 1:
+        corr_abs_sum = cp.ones(X.shape[1], dtype=cp.float64)
+    else:
+        centered = values - cp.mean(values, axis=0)
+        denominator = cp.outer(stds, stds) * (X.shape[0] - 1)
+        corr = centered.T @ centered / denominator
+        corr = cp.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+        cp.fill_diagonal(corr, 1.0)
+        corr_abs_sum = cp.sum(cp.abs(corr), axis=0)
+        corr_abs_sum = cp.where(corr_abs_sum == 0, cp.finfo(cp.float64).eps, corr_abs_sum)
+    independence = 1.0 / corr_abs_sum
+    max_std_index = int(cp.asnumpy(cp.argmax(stds)))
+    min_abs_sum = float(cp.asnumpy(cp.min(cp.abs(corr_abs_sum))))
+    if min_abs_sum <= 0:
+        min_abs_sum = np.finfo(float).eps
+    independence[max_std_index] = 1.0 / min_abs_sum
+    scores = independence * stds
+    indices = cp.asnumpy(cp.argsort(scores)[::-1][:p2])
+    selected = minmax_scale_like_matlab(X[:, indices])
+    return selected, indices, cp.asnumpy(scores)

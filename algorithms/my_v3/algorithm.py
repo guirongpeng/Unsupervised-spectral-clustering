@@ -77,6 +77,8 @@ def run_my_v3(
             initial_weights=np.ones(values.shape[1], dtype=float),
             max_iter=config.weighted_kmeans_max_iter,
             seed=seed,
+            compute_device=config.compute_device,
+            gpu_chunk_size=config.gpu_chunk_size,
         )
     else:
         pseudo_labels = np.asarray(precomputed_pseudo_labels, dtype=int).reshape(-1)
@@ -125,6 +127,8 @@ def run_my_v3(
         seed=seed,
         keep_matlab_split_rule=config.keep_matlab_split_rule,
         root_ranking_cache=root_feature_ranking_cache,
+        compute_device=config.compute_device,
+        gpu_chunk_size=config.gpu_chunk_size,
     )
 
     # Component 4: retain the PLGB-FSC sample-anchor graph and Transfer Cut.
@@ -137,6 +141,8 @@ def run_my_v3(
         kmeans_n_init=config.tcut_kmeans_n_init,
         seed=seed,
         clusterer="litekmeans",
+        compute_device=config.compute_device,
+        gpu_chunk_size=config.gpu_chunk_size,
     )
     return MYV3Result(
         labels=tcut.labels,

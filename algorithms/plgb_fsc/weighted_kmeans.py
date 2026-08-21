@@ -10,6 +10,7 @@ import numpy as np
 from sklearn.metrics import pairwise_distances_argmin_min
 
 from .common.matlab_kmeans import litekmeans_like
+from .common.gpu import resolve_cupy
 
 
 def make_rng(seed: int | None = None) -> np.random.Generator:
@@ -113,10 +114,17 @@ def weighted_kmeans(
     initial_weights: np.ndarray | None = None,
     max_iter: int = 20,
     seed: int | None = None,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """执行加权 KMeans，返回伪标签、中心和最终特征权重。"""
 
     X = np.asarray(X, dtype=float)
+    cp = resolve_cupy(compute_device)
+    if cp is not None:
+        return _weighted_kmeans_gpu(
+            X, k, beta, initial_weights, max_iter, seed, gpu_chunk_size, cp
+        )
     rng = make_rng(seed)
     weights = (
         np.ones(X.shape[1], dtype=float)
@@ -137,6 +145,107 @@ def weighted_kmeans(
         if iteration >= 2 and costs[-1] == costs[-2] == costs[-3]:
             break
     return labels, centers, weights
+
+
+def _weighted_kmeans_gpu(
+    X: np.ndarray,
+    k: int,
+    beta: float,
+    initial_weights: np.ndarray | None,
+    max_iter: int,
+    seed: int | None,
+    chunk_size: int,
+    cp: object,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """GPU equivalent of ``weighted_kmeans``; random initialization stays source-compatible."""
+
+    rng = make_rng(seed)
+    initial = (
+        np.ones(X.shape[1], dtype=float)
+        if initial_weights is None
+        else np.asarray(initial_weights, dtype=float).copy()
+    )
+    centers = initialize_weighted_centroids(X, k, rng)
+    values = cp.asarray(X, dtype=cp.float64)
+    centers_gpu = cp.asarray(centers, dtype=cp.float64)
+    weights = cp.asarray(initial, dtype=cp.float64)
+    labels = cp.zeros(X.shape[0], dtype=cp.int64)
+    costs: list[float] = []
+
+    for iteration in range(max_iter):
+        labels = _assign_weighted_clusters_gpu(
+            values, centers_gpu, weights, chunk_size, cp
+        )
+        centers_gpu = _update_centers_gpu(values, labels, k, rng, cp)
+        weights = _update_feature_weights_gpu(values, labels, centers_gpu, beta, cp)
+        cost = _weighted_kmeans_cost_gpu(values, labels, centers_gpu, weights, beta, cp)
+        costs.append(round(float(cp.asnumpy(cost)), 4))
+        if iteration >= 2 and costs[-1] == costs[-2] == costs[-3]:
+            break
+    return (
+        cp.asnumpy(labels).astype(int, copy=False),
+        cp.asnumpy(centers_gpu),
+        cp.asnumpy(weights),
+    )
+
+
+def _assign_weighted_clusters_gpu(
+    X: object,
+    centers: object,
+    weights: object,
+    chunk_size: int,
+    cp: object,
+) -> object:
+    sqrt_weights = cp.sqrt(weights)
+    scaled_centers = centers * sqrt_weights
+    center_norms = cp.sum(scaled_centers * scaled_centers, axis=1)
+    labels = cp.empty(X.shape[0], dtype=cp.int64)
+    for start in range(0, X.shape[0], chunk_size):
+        stop = min(start + chunk_size, X.shape[0])
+        scaled = X[start:stop] * sqrt_weights
+        distances = (
+            cp.sum(scaled * scaled, axis=1)[:, None]
+            + center_norms[None, :]
+            - 2.0 * scaled @ scaled_centers.T
+        )
+        labels[start:stop] = cp.argmin(
+            cp.nan_to_num(distances, nan=0.0, posinf=0.0, neginf=0.0), axis=1
+        )
+    return labels
+
+
+def _update_centers_gpu(
+    X: object, labels: object, k: int, rng: np.random.Generator, cp: object
+) -> object:
+    counts = cp.bincount(labels, minlength=k)
+    centers = cp.zeros((k, X.shape[1]), dtype=cp.float64)
+    cp.add.at(centers, labels, X)
+    nonempty = counts > 0
+    centers[nonempty] /= counts[nonempty, None]
+    for cluster_idx in np.flatnonzero(~cp.asnumpy(nonempty)):
+        centers[cluster_idx] = X[int(rng.integers(0, X.shape[0]))]
+    return centers
+
+
+def _update_feature_weights_gpu(
+    X: object, labels: object, centers: object, beta: float, cp: object
+) -> object:
+    dispersions = cp.sum((X - centers[labels]) ** 2, axis=0)
+    if bool(cp.asnumpy(cp.allclose(dispersions, 0))):
+        return cp.ones(X.shape[1], dtype=cp.float64) / X.shape[1]
+    safe = cp.where(dispersions <= 0, cp.finfo(cp.float64).eps, dispersions)
+    inverse = safe ** (-1.0 / (beta - 1.0))
+    weights = inverse / inverse.sum()
+    return cp.nan_to_num(
+        weights, nan=1.0 / X.shape[1], posinf=1.0, neginf=0.0
+    )
+
+
+def _weighted_kmeans_cost_gpu(
+    X: object, labels: object, centers: object, weights: object, beta: float, cp: object
+) -> object:
+    dispersions = cp.sum((X - centers[labels]) ** 2, axis=0)
+    return cp.sum((weights**beta) * dispersions)
 
 
 def weighted_kmeans_cost(

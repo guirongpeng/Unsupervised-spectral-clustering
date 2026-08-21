@@ -46,6 +46,8 @@ def split_ball_with_2means(
     max_iter: int = 3,
     seed: int | None = None,
     ranking_cache: dict[str, np.ndarray] | None = None,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> tuple[GranularBall, GranularBall]:
     """Split one ball after MY-V3 local entropy-graph reduction."""
 
@@ -64,6 +66,8 @@ def split_ball_with_2means(
         mutual_knn=mutual_knn,
         self_tuning_graph=self_tuning_graph,
         ranking_cache=ranking_cache,
+        compute_device=compute_device,
+        gpu_chunk_size=gpu_chunk_size,
     )
     labels = two_means_labels(split_X, max_iter=max_iter, seed=seed)
     first = labels == 0
@@ -110,6 +114,8 @@ def split_granular_balls(
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
     root_ranking_cache: dict[str, np.ndarray] | None = None,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> list[GranularBall]:
     """Perform one scan of granular-ball division."""
 
@@ -134,6 +140,8 @@ def split_granular_balls(
             max_iter=split_kmeans_max_iter,
             seed=split_seed,
             ranking_cache=root_ranking_cache if index == 0 else None,
+            compute_device=compute_device,
+            gpu_chunk_size=gpu_chunk_size,
         )
         if ball_2.size == 0:
             new_balls.append(ball_1)
@@ -160,6 +168,8 @@ def generate_granular_balls(
     keep_matlab_split_rule: bool = True,
     max_rounds: int = 10_000,
     root_ranking_cache: dict[str, np.ndarray] | None = None,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> list[GranularBall]:
     """Recursively divide the initial ball until no ball is split."""
 
@@ -184,6 +194,8 @@ def generate_granular_balls(
             seed=seed,
             keep_matlab_split_rule=keep_matlab_split_rule,
             root_ranking_cache=root_ranking_cache if round_index == 0 else None,
+            compute_device=compute_device,
+            gpu_chunk_size=gpu_chunk_size,
         )
         if len(balls) == old_count:
             break
@@ -218,6 +230,8 @@ def generate_anchors(
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
     root_ranking_cache: dict[str, np.ndarray] | None = None,
+    compute_device: str = "cpu",
+    gpu_chunk_size: int = 4096,
 ) -> tuple[np.ndarray, list[GranularBall]]:
     """Generate the final anchor matrix and granular-ball list."""
 
@@ -238,5 +252,7 @@ def generate_anchors(
         seed=seed,
         keep_matlab_split_rule=keep_matlab_split_rule,
         root_ranking_cache=root_ranking_cache,
+        compute_device=compute_device,
+        gpu_chunk_size=gpu_chunk_size,
     )
     return anchors_from_balls(balls), balls

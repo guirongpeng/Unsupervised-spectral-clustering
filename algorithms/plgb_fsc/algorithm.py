@@ -77,6 +77,8 @@ def run_plgb_fsc(
             initial_weights=np.ones(X.shape[1], dtype=float),
             max_iter=config.weighted_kmeans_max_iter,
             seed=seed,
+            compute_device=config.compute_device,
+            gpu_chunk_size=config.gpu_chunk_size,
         )
     else:
         pseudo_labels = np.asarray(precomputed_pseudo_labels, dtype=int).reshape(-1)
@@ -95,6 +97,7 @@ def run_plgb_fsc(
         split_kmeans_max_iter=config.split_kmeans_max_iter,
         seed=seed,
         keep_matlab_split_rule=config.keep_matlab_split_rule,
+        compute_device=config.compute_device,
     )
     # 4) 构建样本-锚点二分图，并用 Transfer Cut 得到最终聚类标签。
     tcut = run_transfer_cut(
@@ -106,6 +109,8 @@ def run_plgb_fsc(
         kmeans_n_init=config.tcut_kmeans_n_init,
         seed=seed,
         clusterer="litekmeans",  # PLGB-FSC 源码兼容路径，贴近 MATLAB kmeans/litekmeans。
+        compute_device=config.compute_device,
+        gpu_chunk_size=config.gpu_chunk_size,
     )
     return PLGBFSCResult(
         labels=tcut.labels,
