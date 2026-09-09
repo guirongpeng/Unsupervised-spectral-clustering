@@ -6,3 +6,4 @@ v2_all_results/
 run_v2_fixed_best_100seeds.py
 run_v3_v4_small_parallel.py
 /data/raw
+/results_all
