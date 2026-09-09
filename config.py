@@ -110,7 +110,7 @@ MY_V3_PARAMS = {
     # PDMF 边相似度中原始相似度的权重 lambda。
     "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
     # 属性冗余惩罚 beta；beta=0 可作为 V1 风格消融。
-    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5,0.7),
+    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5),
     # V3 默认自适应融合熵重要性和图重要性；图结构选项固定开启。
     "fusion_alpha_mode": "adaptive",
     "mutual_knn": True,
@@ -293,24 +293,21 @@ class DatasetConfig:
 @dataclass(frozen=True)
 class ExperimentConfig:
     algorithms: tuple[str, ...] = (
-        "plgb_fsc", "my_v3", "gb_pojg_gbdpc", "gb_pojg_gbsc",
-        "gbsc", "sagbc", "gbct",
-        "dpeak_nard", "dbscan_nard", "dadc_nard", "hcdc_nard",
-        "m3w", "gb_dbscan", "mgagc", "fi_gbhc", "pb_gbhc",
-        "egbdpm", "agc_ild",
+        "plgb_fsc", "my_v3", "sagbc", "dpeak_nard", "dbscan_nard",
+        "dadc_nard", "hcdc_nard", "m3w", "gb_dbscan", "mgagc",
+        "fi_gbhc", "pb_gbhc", "egbdpm", "agc_ild",
     )
     datasets: tuple[str, ...] = (
-        "Wine", "Glass", "Seeds", "Ionosphere", "WDBC", "Iris",
-        "Ecoli", "Libras", "Sonar", "ORL", "Yale", "warpPIE10P", "GLIOMA",
-        "ALLAML","LEUKEMIA", "LUNG", "CARCINOM", "CLL_SUB_111",  "SuCancer","TOX_171", # 0818
+        "ALLAML", "CARCINOM", "CLL_SUB_111", "Ecoli", "Glass", "GLIOMA", "Ionosphere",
+        "Landsat", "LEUKEMIA", "Libras", "LSVT", "LUNG", "MuskV1", "Optdigits", "ORL",
+        "Parkinsons", "PenDigits", "RiceCammeoOsmancik", "Seeds", "Segment", "Sonar", "SuCancer",
+        "TOX_171", "Vehicle", "warpPIE10P", "WDBC", "Wine", "Yale", "Yeast",
     )
-                                #("COIL20","ORL","SuCancer","USPS","Yale","warpPIE10P","GLIOMA","TOX_171","ALLAML",)
-                                # "PenDigits","Letter","Covertype")    # 指定运行数据集名
-    seeds: tuple[int, ...] = (1,2,3)         # 指定运行种子
+    seeds: tuple[int, ...] = (1, 2, 3, 4, 5, 41, 22, 21, 70, 5244)
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
-    output_root: Path = ROOT / "results"
-    run_id: str | None = None              # None: 自动生成，指定：使用指定ID
-    resume: bool = False                   # False: 重新运行，True: 覆盖已存在的结果
+    output_root: Path = ROOT / "results_all"
+    run_id: str | None = "result_期刊_完整"
+    resume: bool = True                    # 在已有 all_runs.csv 上续跑缺失组合
 
 
 DATASETS = {
