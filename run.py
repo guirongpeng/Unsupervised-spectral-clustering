@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import random
 import time
 import traceback
@@ -12,7 +13,37 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from config import EXPERIMENT
+
+
+def _apply_cpu_thread_limit(limit: int | None) -> None:
+    """Limit native numerical-library threads before importing NumPy/SciPy."""
+
+    if limit is None:
+        return
+    value = str(limit)
+    for variable in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[variable] = value
+
+
+_apply_cpu_thread_limit(EXPERIMENT.cpu_thread_limit)
+
 import numpy as np
+from threadpoolctl import threadpool_limits
+
+# Retain the controller for the full process lifetime so already-loaded native
+# BLAS/OpenMP thread pools obey the same limit as the pre-import environment.
+_THREADPOOL_LIMITER = (
+    threadpool_limits(limits=EXPERIMENT.cpu_thread_limit)
+    if EXPERIMENT.cpu_thread_limit is not None
+    else None
+)
 
 from algorithms.my_v0 import MYV0, MYV0Config
 from algorithms.my_v1 import MYV1, MYV1Config
@@ -36,7 +67,6 @@ from algorithms.egbdpm import EGBDPM, EGBDPMConfig
 from algorithms.agc_ild import AGCILD, AGCILDConfig
 from config import (
     DATASETS,
-    EXPERIMENT,
     GB_POJG_GBDPC_PARAMS,
     GB_POJG_GBSC_PARAMS,
     GBSC_PARAMS,
@@ -339,6 +369,9 @@ def _validate_algorithm_config(algorithm: str) -> None:
             raise ValueError("my_v3: mutual_knn must be boolean")
         if not isinstance(params["self_tuning_graph"], bool):
             raise ValueError("my_v3: self_tuning_graph must be boolean")
+        jobs = params["ball_parallel_jobs"]
+        if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+            raise ValueError("my_v3: ball_parallel_jobs must be an integer >= 1")
 
 
 def _validate_count_ratio_options(
@@ -942,6 +975,7 @@ def _create_model(
                 fusion_alpha_mode=str(algorithm_config["fusion_alpha_mode"]),
                 mutual_knn=bool(algorithm_config["mutual_knn"]),
                 self_tuning_graph=bool(algorithm_config["self_tuning_graph"]),
+                ball_parallel_jobs=int(algorithm_config["ball_parallel_jobs"]),
             ),
             n_clusters=n_clusters,
             random_state=seed,
@@ -1141,6 +1175,7 @@ def _algorithm_parameters(
             "fusion_alpha_mode": algorithm_config["fusion_alpha_mode"],
             "mutual_knn": algorithm_config["mutual_knn"],
             "self_tuning_graph": algorithm_config["self_tuning_graph"],
+            "ball_parallel_jobs": algorithm_config["ball_parallel_jobs"],
         }
     if algorithm == "my_v4":
         return {

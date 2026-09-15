@@ -10,6 +10,7 @@ Gaussian-PDMF graph importance.  Neither stage uses class or pseudo labels.
 """
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
@@ -386,6 +387,7 @@ def _graph_attribute_scores_from_components(
     block_size: int = 128,
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    attribute_parallel_jobs: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return leave-one-attribute-out sparse-graph importance scores."""
 
@@ -409,10 +411,19 @@ def _graph_attribute_scores_from_components(
         )
     else:
         edge_weights = None
-    full_graph = np.zeros(edges.shape[0], dtype=float)
-    for start in range(0, active.size, block_size):
-        block = active[start : start + block_size]
-        similarities = _edge_gaussian_pdmf_similarities(
+    if isinstance(attribute_parallel_jobs, bool) or not isinstance(
+        attribute_parallel_jobs, int
+    ):
+        raise TypeError("attribute_parallel_jobs must be an integer")
+    if attribute_parallel_jobs < 1:
+        raise ValueError("attribute_parallel_jobs must be at least 1")
+    blocks = tuple(
+        active[start : start + block_size]
+        for start in range(0, active.size, block_size)
+    )
+
+    def similarities(block: np.ndarray) -> np.ndarray:
+        return _edge_gaussian_pdmf_similarities(
             X,
             spread_left,
             spread_right,
@@ -422,27 +433,31 @@ def _graph_attribute_scores_from_components(
             similarity_lambda,
             edge_weights,
         )
-        full_graph += np.sum(similarities, axis=1)
+
+    def mapped(function):
+        if attribute_parallel_jobs == 1 or len(blocks) == 1:
+            return map(function, blocks)
+        with ThreadPoolExecutor(
+            max_workers=min(attribute_parallel_jobs, len(blocks)),
+            thread_name_prefix="my_v3_attribute",
+        ) as executor:
+            return tuple(executor.map(function, blocks))
+
+    full_graph = np.zeros(edges.shape[0], dtype=float)
+    for block_similarities in mapped(similarities):
+        full_graph += np.sum(block_similarities, axis=1)
     full_graph /= active.size
     denominator = float(np.dot(full_graph, full_graph) + epsilon)
     removal_scale = float((active.size - 1) ** 2)
 
-    for start in range(0, active.size, block_size):
-        block = active[start : start + block_size]
-        similarities = _edge_gaussian_pdmf_similarities(
-            X,
-            spread_left,
-            spread_right,
-            clarity,
-            edges,
-            block,
-            similarity_lambda,
-            edge_weights,
-        )
-        differences = similarities - full_graph[:, None]
-        scores[block] = np.sum(differences * differences, axis=0) / (
+    def block_scores(block: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        differences = similarities(block) - full_graph[:, None]
+        return block, np.sum(differences * differences, axis=0) / (
             removal_scale * denominator
         )
+
+    for block, values in mapped(block_scores):
+        scores[block] = values
     return scores, edges
 
 
@@ -454,6 +469,7 @@ def gaussian_pdmf_graph_attribute_scores(
     similarity_lambda: float = 0.5,
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    attribute_parallel_jobs: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute MY-V3 sparse-graph importance and its mutual-KNN edges."""
 
@@ -475,6 +491,7 @@ def gaussian_pdmf_graph_attribute_scores(
         epsilon,
         mutual_knn=mutual_knn,
         self_tuning_graph=self_tuning_graph,
+        attribute_parallel_jobs=attribute_parallel_jobs,
     )
 
 
@@ -601,6 +618,7 @@ def select_local_features_by_gaussian_pdmf_graph(
     fusion_alpha_mode: str = "adaptive",
     mutual_knn: bool = True,
     self_tuning_graph: bool = True,
+    attribute_parallel_jobs: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Select local attributes using adaptive entropy/graph fusion and redundancy control."""
 
@@ -643,6 +661,7 @@ def select_local_features_by_gaussian_pdmf_graph(
             epsilon,
             mutual_knn=mutual_knn,
             self_tuning_graph=self_tuning_graph,
+            attribute_parallel_jobs=attribute_parallel_jobs,
         )
         entropy_ranks = _normalized_descending_ranks(entropy_scores, single_entropies)
         graph_ranks = _normalized_descending_ranks(graph_scores)

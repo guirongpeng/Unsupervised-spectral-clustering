@@ -125,6 +125,7 @@ def run_my_v3(
         seed=seed,
         keep_matlab_split_rule=config.keep_matlab_split_rule,
         root_ranking_cache=root_feature_ranking_cache,
+        ball_parallel_jobs=config.ball_parallel_jobs,
     )
 
     # Component 4: retain the PLGB-FSC sample-anchor graph and Transfer Cut.

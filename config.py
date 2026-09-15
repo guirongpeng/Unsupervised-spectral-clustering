@@ -116,6 +116,12 @@ MY_V3_PARAMS = {
     "mutual_knn": True,
     "self_tuning_graph": True,
     "pdmf_epsilon": 1e-8,
+    # 同一轮独立粒球的并行任务数；1 为串行，建议从 2 开始测试。
+    "ball_parallel_jobs": 2,
+        # 组件3
+        #   只有一个待分裂粒球：用 ball_parallel_jobs 并行属性块；
+        #   多个待分裂粒球：用 ball_parallel_jobs 并行粒球，每个粒球内部属性块串行；
+        #   ball_parallel_jobs=1：完全保持原串行行为。
 }
 
 MY_V4_PARAMS = {
@@ -308,6 +314,16 @@ class ExperimentConfig:
     output_root: Path = ROOT / "results_all"
     run_id: str | None = "result_期刊_完整"
     resume: bool = True                    # 在已有 all_runs.csv 上续跑缺失组合
+    # 单个 Benchmark 进程的数值计算线程上限；None 表示不限制。
+    cpu_thread_limit: int | None = 10
+
+    def __post_init__(self) -> None:
+        if self.cpu_thread_limit is not None and (
+            isinstance(self.cpu_thread_limit, bool)
+            or not isinstance(self.cpu_thread_limit, int)
+            or self.cpu_thread_limit < 1
+        ):
+            raise ValueError("cpu_thread_limit must be None or an integer >= 1")
 
 
 DATASETS = {
