@@ -93,37 +93,6 @@ MY_V2_PARAMS = {
     "ball_parallel_jobs": 4,
 }
 
-MY_V3_PARAMS = {
-    # 组件2：全局保留属性数；counts 使用具体数量，ratios 使用特征比例。
-    "p1_counts": (),
-    "p1_ratios": (0.25, 0.50, 0.75),
-    # 组件3：每个粒球保留的局部属性数。
-    "p2_counts": (),
-    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
-    # 伪纯度停止阈值：pseudo_purity >= theta 且 ball_size < 8。
-    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
-    # Gaussian-PDMF 邻域和局部互惠 KNN 图邻域。
-    "pdmf_neighbors_counts": (5, 10),
-    "pdmf_neighbors_ratios": (),
-    "graph_neighbors_counts": (3, 5, 10),
-    "graph_neighbors_ratios": (),
-    # PDMF 边相似度中原始相似度的权重 lambda。
-    "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
-    # 属性冗余惩罚 beta；beta=0 可作为 V1 风格消融。
-    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5),
-    # V3 默认自适应融合熵重要性和图重要性；图结构选项固定开启。
-    "fusion_alpha_mode": "adaptive",
-    "mutual_knn": True,
-    "self_tuning_graph": True,
-    "pdmf_epsilon": 1e-8,
-    # 同一轮独立粒球的并行任务数；1 为串行，建议从 2 开始测试。
-    "ball_parallel_jobs": 2,
-        # 组件3
-        #   只有一个待分裂粒球：用 ball_parallel_jobs 并行属性块；
-        #   多个待分裂粒球：用 ball_parallel_jobs 并行粒球，每个粒球内部属性块串行；
-        #   ball_parallel_jobs=1：完全保持原串行行为。
-}
-
 MY_V4_PARAMS = {
     # 组件2：全局属性数量；伪标签互信息权重由置信度自动确定。
     "p1_counts": (),
@@ -290,6 +259,39 @@ AGC_ILD_PARAMS = {
     "tolerance": 1e-6,
 }
 
+
+MY_V3_PARAMS = {
+    # 组件2：全局保留属性数；counts 使用具体数量，ratios 使用特征比例。
+    "p1_counts": (),
+    "p1_ratios": (0.25, 0.50, 0.75),
+    # 组件3：每个粒球保留的局部属性数。
+    "p2_counts": (),
+    "p2_ratios": (0.05, 0.10, 0.25, 0.50, 0.75),
+    # 伪纯度停止阈值：pseudo_purity >= theta 且 ball_size < 8。
+    "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
+    # Gaussian-PDMF 邻域和局部互惠 KNN 图邻域。
+    "pdmf_neighbors_counts": (5, 10),
+    "pdmf_neighbors_ratios": (),
+    "graph_neighbors_counts": (3, 5, 10),
+    "graph_neighbors_ratios": (),
+    # PDMF 边相似度中原始相似度的权重 lambda。
+    "pdmf_similarity_lambda_ratios": (0.1, 0.5, 0.9),
+    # 属性冗余惩罚 beta；beta=0 可作为 V1 风格消融。
+    "redundancy_beta_values": (0.0, 0.1, 0.3, 0.5),
+    # V3 默认自适应融合熵重要性和图重要性；图结构选项固定开启。
+    "fusion_alpha_mode": "adaptive",
+    "mutual_knn": True,
+    "self_tuning_graph": True,
+    "pdmf_epsilon": 1e-8,
+    # 同一轮独立粒球的并行任务数；1 为串行，建议从 2 开始测试。
+    "ball_parallel_jobs": 2,
+        # 组件3
+        #   只有一个待分裂粒球：用 ball_parallel_jobs 并行属性块；
+        #   多个待分裂粒球：用 ball_parallel_jobs 并行粒球，每个粒球内部属性块串行；
+        #   ball_parallel_jobs=1：完全保持原串行行为。
+}
+
+
 @dataclass(frozen=True)
 class DatasetConfig:
     name: str
@@ -299,7 +301,7 @@ class DatasetConfig:
 @dataclass(frozen=True)
 class ExperimentConfig:
     algorithms: tuple[str, ...] = (
-        "plgb_fsc", "my_v3", "sagbc", "dpeak_nard", "dbscan_nard",
+        "my_v3", "plgb_fsc", "sagbc", "dpeak_nard", "dbscan_nard",
         "dadc_nard", "hcdc_nard", "m3w", "gb_dbscan", "mgagc",
         "fi_gbhc", "pb_gbhc", "egbdpm", "agc_ild",
     )
