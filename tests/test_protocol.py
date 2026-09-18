@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from algorithms.my_v0 import MYV0
@@ -10,7 +12,8 @@ from algorithms.my_v1.feature_selection import (
     resolve_pdmf_neighbor_count as resolve_my_v1_pdmf_neighbor_count,
 )
 from algorithms.my_v2 import MYV2
-from algorithms.plgb_fsc import PLGBFSC
+from algorithms.plgb_fsc import PLGBFSC, PLGBFSCConfig, run_plgb_fsc
+from algorithms.plgb_fsc.granular_ball import GranularBall, split_granular_balls
 from config import (
     DATASETS,
     MY_V0_PARAMS,
@@ -19,10 +22,11 @@ from config import (
     PLGB_FSC_PARAMS,
     ExperimentConfig,
 )
-from core.data import load_dataset
+from core.data import Dataset, load_dataset
 from core.metrics import evaluate_clustering
 from run import (
     _create_model,
+    _run_algorithm_grid,
     _resolve_p1_values,
     _resolve_p2_values,
     _resolve_pdmf_neighbor_settings,
@@ -115,6 +119,142 @@ def test_run_can_create_all_algorithms() -> None:
     assert isinstance(my_v0, MYV0)
     assert isinstance(my_v1, MYV1)
     assert isinstance(my_v2, MYV2)
+
+
+def test_plgb_global_mi_cache_preserves_result(monkeypatch) -> None:
+    dataset = load_dataset(DATASETS["Iris"])
+    config = PLGBFSCConfig(p1=3, p2=2, purity=0.85)
+    first = run_plgb_fsc(dataset.X, dataset.n_classes, config, seed=1)
+    cached_selection = (
+        np.argsort(first.mutual_info_scores)[::-1],
+        first.mutual_info_scores,
+    )
+
+    def should_not_recompute(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise AssertionError("cached PLGB-FSC run recomputed mutual information")
+
+    monkeypatch.setattr(
+        "algorithms.plgb_fsc.feature_selection.mutual_info_scores",
+        should_not_recompute,
+    )
+    cached = run_plgb_fsc(
+        dataset.X,
+        dataset.n_classes,
+        config,
+        seed=1,
+        precomputed_pseudo_labels=first.pseudo_labels,
+        precomputed_global_selection=cached_selection,
+    )
+    assert np.array_equal(cached.labels, first.labels)
+    assert np.array_equal(cached.selected_feature_indices, first.selected_feature_indices)
+    assert np.array_equal(cached.mutual_info_scores, first.mutual_info_scores)
+
+
+def test_plgb_grid_computes_global_mi_once_per_seed(
+    monkeypatch, tmp_path
+) -> None:
+    import algorithms.plgb_fsc.feature_selection as feature_selection
+
+    calls = 0
+    original = feature_selection.mutual_info_scores
+
+    def count_calls(X: np.ndarray, pseudo_labels: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original(X, pseudo_labels)
+
+    monkeypatch.setattr(feature_selection, "mutual_info_scores", count_calls)
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "p1_counts", (3, 4))
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "p1_ratios", ())
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "p2_values", (2,))
+    monkeypatch.setitem(PLGB_FSC_PARAMS, "theta_values", (0.85,))
+    dataset = load_dataset(DATASETS["Iris"])
+    config = ExperimentConfig(
+        algorithms=("plgb_fsc",),
+        datasets=(dataset.name,),
+        seeds=(1,),
+        output_root=tmp_path,
+        run_id="cache_test",
+        resume=False,
+    )
+    _run_algorithm_grid(dataset, config, "cache_test", "plgb_fsc")
+    assert calls == 1
+
+
+def test_plgb_parallel_ball_splits_preserve_serial_result() -> None:
+    X = np.arange(128, dtype=float).reshape(32, 4)
+    balls = [
+        GranularBall(X[:16], np.zeros(16, dtype=int)),
+        GranularBall(X[16:], np.zeros(16, dtype=int)),
+    ]
+    serial = split_granular_balls(balls, purity_threshold=0.85, p2=2, seed=7)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        parallel = split_granular_balls(
+            balls,
+            purity_threshold=0.85,
+            p2=2,
+            seed=7,
+            executor=executor,
+        )
+    assert len(parallel) == len(serial)
+    assert all(
+        np.array_equal(left.X, right.X)
+        and np.array_equal(left.pseudo_labels, right.pseudo_labels)
+        for left, right in zip(parallel, serial)
+    )
+
+
+def test_plgb_root_caches_preserve_granular_balls(monkeypatch) -> None:
+    import algorithms.plgb_fsc.granular_ball as granular_ball
+    import algorithms.plgb_fsc.feature_selection as feature_selection
+
+    X = np.vstack((np.zeros((6, 4)), np.full((6, 4), 10.0)))
+    pseudo_labels = np.zeros(12, dtype=int)
+    local_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    split_cache: dict[int, tuple[GranularBall, GranularBall]] = {}
+    first_anchors, first_balls = granular_ball.generate_anchors(
+        X,
+        pseudo_labels,
+        p2=2,
+        purity_threshold=0.85,
+        seed=7,
+        root_local_selection_cache=local_cache,
+        root_split_cache=split_cache,
+    )
+    assert "selection" in local_cache and 2 in split_cache
+
+    def should_not_compute_correlation(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise AssertionError("cached root local ranking recomputed correlation")
+
+    monkeypatch.setattr(
+        feature_selection.np,
+        "corrcoef",
+        should_not_compute_correlation,
+    )
+    local_cached_anchors, local_cached_balls = granular_ball.generate_anchors(
+        X,
+        pseudo_labels,
+        p2=2,
+        purity_threshold=0.85,
+        seed=7,
+        root_local_selection_cache=local_cache,
+    )
+    split_cached_anchors, split_cached_balls = granular_ball.generate_anchors(
+        X,
+        pseudo_labels,
+        p2=2,
+        purity_threshold=0.85,
+        seed=7,
+        root_local_selection_cache=local_cache,
+        root_split_cache=split_cache,
+    )
+    for anchors, balls in (
+        (local_cached_anchors, local_cached_balls),
+        (split_cached_anchors, split_cached_balls),
+    ):
+        assert np.array_equal(anchors, first_anchors)
+        assert len(balls) == len(first_balls)
+        assert all(np.array_equal(left.X, right.X) for left, right in zip(balls, first_balls))
 
 
 def test_dataset_catalog_contains_both_papers_datasets() -> None:

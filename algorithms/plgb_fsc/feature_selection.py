@@ -74,17 +74,27 @@ def select_global_features_by_pseudo_label(
     X: np.ndarray,
     pseudo_labels: np.ndarray,
     p1: int,
+    precomputed_ranking: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Keep the ``p1`` largest source-compatible global scores."""
 
-    scores = mutual_info_scores(X, pseudo_labels)
-    indices = np.argsort(scores)[::-1][:p1]
+    if precomputed_ranking is None:
+        scores = mutual_info_scores(X, pseudo_labels)
+        ranking = np.argsort(scores)[::-1]
+    else:
+        ranking, scores = precomputed_ranking
+        ranking = np.asarray(ranking, dtype=int).reshape(-1)
+        scores = np.asarray(scores, dtype=float).reshape(-1)
+        if ranking.size != X.shape[1] or scores.size != X.shape[1]:
+            raise ValueError("cached global ranking must match X features")
+    indices = ranking[:p1]
     return X[:, indices], indices, scores
 
 
 def select_local_features_by_discernibility(
     X: np.ndarray,
     p2: int,
+    precomputed_ranking: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply the released local discernibility score before 2-Means."""
 
@@ -95,37 +105,45 @@ def select_local_features_by_discernibility(
         )
     p2 = max(1, min(int(p2), X.shape[1]))
 
-    # MATLAB std uses the sample standard deviation by default.
-    ddof = 1 if X.shape[0] > 1 else 0
-    stds = np.std(X, axis=0, ddof=ddof)
+    if precomputed_ranking is None:
+        # MATLAB std uses the sample standard deviation by default.
+        ddof = 1 if X.shape[0] > 1 else 0
+        stds = np.std(X, axis=0, ddof=ddof)
 
-    if X.shape[0] < 2 or X.shape[1] == 1:
-        corr_abs_sum = np.ones(X.shape[1], dtype=float)
+        if X.shape[0] < 2 or X.shape[1] == 1:
+            corr_abs_sum = np.ones(X.shape[1], dtype=float)
+        else:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                corr = np.corrcoef(X, rowvar=False)
+            corr = np.nan_to_num(
+                corr,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            np.fill_diagonal(corr, 1.0)
+            corr_abs_sum = np.sum(np.abs(corr), axis=0)
+            corr_abs_sum = np.where(
+                corr_abs_sum == 0,
+                np.finfo(float).eps,
+                corr_abs_sum,
+            )
+
+        independence = 1.0 / corr_abs_sum
+        max_std_index = int(np.argmax(stds))
+        min_abs_sum = float(np.min(np.abs(corr_abs_sum)))
+        if min_abs_sum <= 0:
+            min_abs_sum = np.finfo(float).eps
+        independence[max_std_index] = 1.0 / min_abs_sum
+
+        scores = independence * stds
+        ranking = np.argsort(scores)[::-1]
     else:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            corr = np.corrcoef(X, rowvar=False)
-        corr = np.nan_to_num(
-            corr,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        np.fill_diagonal(corr, 1.0)
-        corr_abs_sum = np.sum(np.abs(corr), axis=0)
-        corr_abs_sum = np.where(
-            corr_abs_sum == 0,
-            np.finfo(float).eps,
-            corr_abs_sum,
-        )
-
-    independence = 1.0 / corr_abs_sum
-    max_std_index = int(np.argmax(stds))
-    min_abs_sum = float(np.min(np.abs(corr_abs_sum)))
-    if min_abs_sum <= 0:
-        min_abs_sum = np.finfo(float).eps
-    independence[max_std_index] = 1.0 / min_abs_sum
-
-    scores = independence * stds
-    indices = np.argsort(scores)[::-1][:p2]
+        ranking, scores = precomputed_ranking
+        ranking = np.asarray(ranking, dtype=int).reshape(-1)
+        scores = np.asarray(scores, dtype=float).reshape(-1)
+        if ranking.size != X.shape[1] or scores.size != X.shape[1]:
+            raise ValueError("cached local ranking must match X features")
+    indices = ranking[:p2]
     selected = minmax_scale_like_matlab(X[:, indices])
     return selected, indices, scores

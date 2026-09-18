@@ -328,6 +328,10 @@ def _validate_algorithm_config(algorithm: str) -> None:
                 raise ValueError(f"{algorithm}: p2_values must contain positive integers")
     if not theta_values or any(not 0.0 < theta <= 1.0 for theta in theta_values):
         raise ValueError(f"{algorithm}: theta_values must be in (0, 1]")
+    if algorithm == "plgb_fsc":
+        jobs = params["ball_parallel_jobs"]
+        if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+            raise ValueError("plgb_fsc: ball_parallel_jobs must be an integer >= 1")
     if algorithm in {"my_v0", "my_v1", "my_v2", "my_v3", "my_v4"}:
         _validate_count_ratio_options(
             algorithm, params, "pdmf_neighbors", minimum_count=1
@@ -818,6 +822,8 @@ def _create_model(
     sagbc_search_radius_scale: float | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
     precomputed_global_selection: tuple[object, ...] | None = None,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    root_split_cache: dict[int, tuple[object, object]] | None = None,
     global_stability_curve_cache: dict[str, object] | None = None,
     root_feature_ranking_cache: dict[str, object] | None = None,
     local_feature_selection_cache: dict[tuple[object, ...], np.ndarray] | None = None,
@@ -880,10 +886,18 @@ def _create_model(
         raise ValueError(f"{algorithm}: p1 and p2 are required")
     if algorithm == "plgb_fsc":
         return PLGBFSC(
-            PLGBFSCConfig(p1=p1, p2=p2, purity=theta),
+            PLGBFSCConfig(
+                p1=p1,
+                p2=p2,
+                purity=theta,
+                ball_parallel_jobs=int(algorithm_config["ball_parallel_jobs"]),
+            ),
             n_clusters=n_clusters,
             random_state=seed,
             precomputed_pseudo_labels=precomputed_pseudo_labels,
+            precomputed_global_selection=precomputed_global_selection,
+            root_local_selection_cache=root_local_selection_cache,
+            root_split_cache=root_split_cache,
         )
     if algorithm == "my_v0":
         if pdmf_neighbors is None:
@@ -1114,6 +1128,7 @@ def _algorithm_parameters(
         return {
             "global_selection": "source-compatible pseudo-label mutual information",
             "local_selection": "source discernibility score",
+            "ball_parallel_jobs": algorithm_config["ball_parallel_jobs"],
         }
     if algorithm == "my_v0":
         return {
@@ -2147,6 +2162,12 @@ def _run_algorithm_grid(
     local_feature_selection_caches: dict[
         tuple[str, ...], dict[tuple[object, ...], np.ndarray]
     ] = {}
+    plgb_root_local_selection_caches: dict[
+        tuple[str, str], dict[str, tuple[np.ndarray, np.ndarray]]
+    ] = {}
+    plgb_root_split_caches: dict[
+        tuple[str, str], dict[int, tuple[object, object]]
+    ] = {}
     planned = len(config.seeds) * len(parameter_combinations) * len(theta_values)
     with all_runs_path.open(mode, encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=run_fields)
@@ -2176,7 +2197,11 @@ def _run_algorithm_grid(
                         f"graph_neighbors={graph_neighbors_text} "
                         f"lambda={similarity_lambda_text} "
                     )
-                if algorithm == "my_v2":
+                if algorithm == "plgb_fsc":
+                    global_cache_key = (str(seed),)
+                    root_cache_key = global_cache_key
+                    curve_cache_key = ()
+                elif algorithm == "my_v2":
                     parameter_output += f"delta={stability_delta_text} "
                     global_cache_key = (
                         stability_delta_text,
@@ -2229,6 +2254,19 @@ def _run_algorithm_grid(
                 local_feature_selection_cache = (
                     local_feature_selection_caches.setdefault(root_cache_key, {})
                     if algorithm == "my_v2"
+                    else None
+                )
+                plgb_root_cache_key = (str(seed), str(p1))
+                root_local_selection_cache = (
+                    plgb_root_local_selection_caches.setdefault(
+                        plgb_root_cache_key, {}
+                    )
+                    if algorithm == "plgb_fsc"
+                    else None
+                )
+                root_split_cache = (
+                    plgb_root_split_caches.setdefault(plgb_root_cache_key, {})
+                    if algorithm == "plgb_fsc"
                     else None
                 )
                 for theta in theta_values:
@@ -2306,6 +2344,8 @@ def _run_algorithm_grid(
                             precomputed_global_selection=global_selection_cache.get(
                                 global_cache_key
                             ),
+                            root_local_selection_cache=root_local_selection_cache,
+                            root_split_cache=root_split_cache,
                             global_stability_curve_cache=(
                                 global_stability_curve_cache
                             ),
@@ -2318,7 +2358,12 @@ def _run_algorithm_grid(
                         if seed not in pseudo_labels_by_seed:
                             pseudo_labels_by_seed[seed] = model.pseudo_labels_.copy()
                         if global_cache_key not in global_selection_cache:
-                            if algorithm in {"my_v0", "my_v1", "my_v3", "my_v4"}:
+                            if algorithm == "plgb_fsc":
+                                global_selection_cache[global_cache_key] = (
+                                    np.argsort(model.mutual_info_scores_)[::-1],
+                                    model.mutual_info_scores_.copy(),
+                                )
+                            elif algorithm in {"my_v0", "my_v1", "my_v3", "my_v4"}:
                                 global_selection_cache[global_cache_key] = (
                                     model.selected_feature_indices_.copy(),
                                     model.attribute_scores_.copy(),

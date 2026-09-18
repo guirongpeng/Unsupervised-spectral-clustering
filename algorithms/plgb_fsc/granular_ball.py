@@ -6,6 +6,7 @@ from __future__ import annotations
 锚点，后续 Transfer Cut 只需要处理样本-锚点二分图。
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -47,6 +48,7 @@ def split_ball_with_2means(
     p2: int,
     max_iter: int = 3,
     seed: int | None = None,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> tuple[GranularBall, GranularBall]:
     """用局部特征选择 + 2-Means 将一个粒球二分。"""
 
@@ -55,7 +57,21 @@ def split_ball_with_2means(
         return ball, GranularBall(ball.X[:0].copy(), ball.pseudo_labels[:0].copy())
 
     # 先在粒球内部选择 p2 个最适合拆分的局部特征，再做 2-Means。
-    split_X, _, _ = select_local_features_by_discernibility(ball.X, p2)
+    cached_ranking = (
+        root_local_selection_cache.get("selection")
+        if root_local_selection_cache is not None
+        else None
+    )
+    split_X, _, scores = select_local_features_by_discernibility(
+        ball.X,
+        p2,
+        precomputed_ranking=cached_ranking,
+    )
+    if root_local_selection_cache is not None and cached_ranking is None:
+        root_local_selection_cache["selection"] = (
+            np.argsort(scores)[::-1],
+            scores.copy(),
+        )
     labels = two_means_labels(split_X, max_iter=max_iter, seed=seed)
     first = labels == 0
     second = labels == 1
@@ -97,21 +113,45 @@ def split_granular_balls(
     split_kmeans_max_iter: int = 3,
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
+    executor: ThreadPoolExecutor | None = None,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    root_split_cache: dict[int, tuple[GranularBall, GranularBall]] | None = None,
 ) -> list[GranularBall]:
     """对当前粒球列表做一轮扫描拆分。"""
 
+    should_split = tuple(
+        not should_keep_ball(ball, purity_threshold, keep_matlab_split_rule)
+        for ball in balls
+    )
+
+    def process(item: tuple[int, GranularBall]) -> list[GranularBall]:
+        index, ball = item
+        if not should_split[index]:
+            return [ball]
+        if index == 0 and root_split_cache is not None and p2 in root_split_cache:
+            return list(root_split_cache[p2])
+        split_seed = None if seed is None else seed + index
+        ball_1, ball_2 = split_ball_with_2means(
+            ball,
+            p2,
+            split_kmeans_max_iter,
+            split_seed,
+            root_local_selection_cache=(
+                root_local_selection_cache if index == 0 else None
+            ),
+        )
+        if index == 0 and root_split_cache is not None:
+            root_split_cache[p2] = (ball_1, ball_2)
+        return [ball_1] if ball_2.size == 0 else [ball_1, ball_2]
+
+    results = (
+        executor.map(process, enumerate(balls))
+        if executor is not None
+        else map(process, enumerate(balls))
+    )
     new_balls: list[GranularBall] = []
-    for index, ball in enumerate(balls):
-        if should_keep_ball(ball, purity_threshold, keep_matlab_split_rule):
-            new_balls.append(ball)
-        else:
-            # 给不同粒球拆分使用不同 seed，减少完全相同初始化。
-            split_seed = None if seed is None else seed + index
-            ball_1, ball_2 = split_ball_with_2means(ball, p2, split_kmeans_max_iter, split_seed)
-            if ball_2.size == 0:
-                new_balls.append(ball_1)
-            else:
-                new_balls.extend([ball_1, ball_2])
+    for children in results:
+        new_balls.extend(children)
     return new_balls
 
 
@@ -124,24 +164,53 @@ def generate_granular_balls(
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
     max_rounds: int = 10_000,
+    ball_parallel_jobs: int = 1,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    root_split_cache: dict[int, tuple[GranularBall, GranularBall]] | None = None,
 ) -> list[GranularBall]:
     """从单个大粒球开始，迭代拆分直到一轮后粒球数量不再变化。"""
 
-    balls = [GranularBall(np.asarray(X, dtype=float), np.asarray(pseudo_labels).reshape(-1))]
-    for _ in range(max_rounds):
-        old_count = len(balls)
-        balls = split_granular_balls(
-            balls,
-            purity_threshold,
-            p2,
-            split_kmeans_max_iter=split_kmeans_max_iter,
-            seed=seed,
-            keep_matlab_split_rule=keep_matlab_split_rule,
+    if (
+        isinstance(ball_parallel_jobs, bool)
+        or not isinstance(ball_parallel_jobs, int)
+        or ball_parallel_jobs < 1
+    ):
+        raise ValueError("ball_parallel_jobs must be an integer >= 1")
+    balls = [
+        GranularBall(
+            np.asarray(X, dtype=float), np.asarray(pseudo_labels).reshape(-1)
         )
-        if len(balls) == old_count:
-            break
-    else:
-        raise RuntimeError(f"Granular-ball splitting did not converge within {max_rounds} rounds")
+    ]
+    executor = (
+        ThreadPoolExecutor(max_workers=ball_parallel_jobs)
+        if ball_parallel_jobs > 1
+        else None
+    )
+    try:
+        for round_index in range(max_rounds):
+            old_count = len(balls)
+            balls = split_granular_balls(
+                balls,
+                purity_threshold,
+                p2,
+                split_kmeans_max_iter=split_kmeans_max_iter,
+                seed=seed,
+                keep_matlab_split_rule=keep_matlab_split_rule,
+                executor=executor,
+                root_local_selection_cache=(
+                    root_local_selection_cache if round_index == 0 else None
+                ),
+                root_split_cache=root_split_cache if round_index == 0 else None,
+            )
+            if len(balls) == old_count:
+                break
+        else:
+            raise RuntimeError(
+                f"Granular-ball splitting did not converge within {max_rounds} rounds"
+            )
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
     return balls
 
 
@@ -165,6 +234,9 @@ def generate_anchors(
     split_kmeans_max_iter: int = 3,
     seed: int | None = None,
     keep_matlab_split_rule: bool = True,
+    ball_parallel_jobs: int = 1,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    root_split_cache: dict[int, tuple[GranularBall, GranularBall]] | None = None,
 ) -> tuple[np.ndarray, list[GranularBall]]:
     """生成最终锚点矩阵和粒球列表。"""
 
@@ -176,5 +248,8 @@ def generate_anchors(
         split_kmeans_max_iter=split_kmeans_max_iter,
         seed=seed,
         keep_matlab_split_rule=keep_matlab_split_rule,
+        ball_parallel_jobs=ball_parallel_jobs,
+        root_local_selection_cache=root_local_selection_cache,
+        root_split_cache=root_split_cache,
     )
     return anchors_from_balls(balls), balls

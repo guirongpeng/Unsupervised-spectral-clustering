@@ -59,6 +59,9 @@ def run_plgb_fsc(
     config: PLGBFSCConfig,
     seed: int | None = None,
     precomputed_pseudo_labels: np.ndarray | None = None,
+    precomputed_global_selection: tuple[np.ndarray, np.ndarray] | None = None,
+    root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    root_split_cache: dict[int, tuple[GranularBall, GranularBall]] | None = None,
 ) -> PLGBFSCResult:
     """执行完整 PLGB-FSC 流程。"""
 
@@ -85,7 +88,12 @@ def run_plgb_fsc(
         pseudo_labels = pseudo_labels.copy()
 
     # 2) 用伪标签给每个原始特征打互信息分数，保留前 p1 个特征。
-    X_selected, feature_indices, mi_scores = select_global_features_by_pseudo_label(X, pseudo_labels, p1)
+    X_selected, feature_indices, mi_scores = select_global_features_by_pseudo_label(
+        X,
+        pseudo_labels,
+        p1,
+        precomputed_ranking=precomputed_global_selection,
+    )
     # 3) 在筛选后的特征空间中递归拆分粒球，并用每个粒球均值作为锚点。
     anchors, balls = generate_anchors(
         X_selected,
@@ -95,6 +103,9 @@ def run_plgb_fsc(
         split_kmeans_max_iter=config.split_kmeans_max_iter,
         seed=seed,
         keep_matlab_split_rule=config.keep_matlab_split_rule,
+        ball_parallel_jobs=config.ball_parallel_jobs,
+        root_local_selection_cache=root_local_selection_cache,
+        root_split_cache=root_split_cache,
     )
     # 4) 构建样本-锚点二分图，并用 Transfer Cut 得到最终聚类标签。
     tcut = run_transfer_cut(
@@ -157,6 +168,9 @@ class PLGBFSC(BenchmarkAlgorithm):
         n_clusters: int,
         random_state: int = 1,
         precomputed_pseudo_labels: np.ndarray | None = None,
+        precomputed_global_selection: tuple[np.ndarray, np.ndarray] | None = None,
+        root_local_selection_cache: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+        root_split_cache: dict[int, tuple[GranularBall, GranularBall]] | None = None,
     ) -> None:
         if isinstance(random_state, bool) or not isinstance(random_state, int):
             raise TypeError("random_state must be an integer")
@@ -164,6 +178,9 @@ class PLGBFSC(BenchmarkAlgorithm):
         self.n_clusters = n_clusters
         self.random_state = random_state
         self._precomputed_pseudo_labels = precomputed_pseudo_labels
+        self._precomputed_global_selection = precomputed_global_selection
+        self._root_local_selection_cache = root_local_selection_cache
+        self._root_split_cache = root_split_cache
 
     def fit(self, X: np.ndarray) -> "PLGBFSC":
         result = run_plgb_fsc(
@@ -172,6 +189,9 @@ class PLGBFSC(BenchmarkAlgorithm):
             self.config,
             seed=self.random_state,
             precomputed_pseudo_labels=self._precomputed_pseudo_labels,
+            precomputed_global_selection=self._precomputed_global_selection,
+            root_local_selection_cache=self._root_local_selection_cache,
+            root_split_cache=self._root_split_cache,
         )
         self.labels_ = np.asarray(result.labels, dtype=int).reshape(-1)
         self.result_ = result

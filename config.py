@@ -35,6 +35,8 @@ PLGB_FSC_PARAMS = {
     "p2_values": tuple(range(4, 201, 4)),          # 默认属性区间(50, 201, 10)
     "theta_values": tuple(i / 100 for i in range(70, 100, 5)),
                                                             # 默认阈值(70, 100, 5):(0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
+    # 同一轮独立粒球的并行任务数；1 为串行，不参与参数网格。
+    "ball_parallel_jobs": 2,
 }
 
 MY_V0_PARAMS = {
@@ -306,10 +308,10 @@ class ExperimentConfig:
         "fi_gbhc", "pb_gbhc", "egbdpm", "agc_ild",
     )
     datasets: tuple[str, ...] = (
-        "ALLAML", "CARCINOM", "CLL_SUB_111", "Ecoli", "Glass", "GLIOMA", "Ionosphere",
-        "Landsat", "LEUKEMIA", "Libras", "LSVT", "LUNG", "MuskV1", "Optdigits", "ORL",
-        "Parkinsons", "PenDigits", "RiceCammeoOsmancik", "Seeds", "Segment", "Sonar", "SuCancer",
-        "TOX_171", "Vehicle", "warpPIE10P", "WDBC", "Wine", "Yale", "Yeast",
+        # "ALLAML", "CARCINOM", "CLL_SUB_111", "Ecoli", "Glass", "GLIOMA", "Ionosphere",
+        # "Landsat", "LEUKEMIA", "Libras", "LSVT", "LUNG", "MuskV1", "Optdigits", "ORL",
+        # "Parkinsons", "PenDigits", "RiceCammeoOsmancik", "Seeds", "Segment", "Sonar", "SuCancer",
+        # "TOX_171", "Vehicle", "warpPIE10P", "WDBC", "Wine", "Yale", "Yeast",
     )
     seeds: tuple[int, ...] = (1, 2, 3, 4, 5, 41, 22, 21, 70, 5244)
     nmi_average_method: str = "geometric"  # 指定运行NMI平均方法
